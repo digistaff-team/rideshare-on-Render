@@ -84,6 +84,19 @@ async def ask_route(m: types.Message, state: FSMContext):
 @router.message(RideForm.chatting_with_ai)
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_ai_conversation(m: types.Message, state: FSMContext):
+    if m.text in ["📋 Мои поездки", "🔍 Найти попутчиков", "🙋 Подвези", "🚗 Подвезу"]:
+        # Если нажали кнопку меню — выходим из режима AI и передаем управление дальше
+        # Но так как aiogram уже поймал это сообщение здесь, нам нужно вручную вызвать нужную функцию
+        # Или просто сбросить состояние, чтобы пользователь нажал кнопку второй раз (простой вариант)
+        await state.clear()
+        if m.text == "📋 Мои поездки":
+            return await list_rides(m)
+        elif m.text == "🔍 Найти попутчиков":
+            return await find_rides(m)
+        elif "Подвези" in m.text or "Подвезу" in m.text:
+            return await ask_route(m, state)
+        return
+    
     res = await nlu.parse_intent(m.text, m.from_user.id)
     
     if not res:
