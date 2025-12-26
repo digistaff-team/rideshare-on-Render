@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta
 from sqlalchemy import delete, select, update
 from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -66,9 +66,65 @@ async def start(m: types.Message, state: FSMContext):
     )
     await m.answer(welcome_text, reply_markup=main_kb(), parse_mode="Markdown")
 
+# --- ПОИСК ПОПУТЧИКОВ (Выше, чтобы перехватывать команды) ---
+@router.message(F.text == "🔍 Найти попутчиков")
+async def find_rides(m: types.Message, state: FSMContext):
+    # Сбрасываем диалог с AI, если он был активен
+    await state.clear()
+    
+    async with async_session() as s:
+        rides_stmt = await s.execute(
+            select(Ride, User).join(User).where(
+                Ride.created_at > datetime.utcnow() - timedelta(days=2),
+                (Ride.role == 'driver') & (Ride.seats > 0) | (Ride.role == 'passenger')
+            ).order_by(Ride.created_at.desc()).limit(10)
+        )
+        rides = rides_stmt.all()
+        
+        if not rides:
+            return await m.answer("Нет актуальных объявлений.")
+        
+        for r, u in rides:
+            seats_text = f"Мест: {r.seats}" if r.role == 'driver' else ""
+            txt = (
+                f"{'🚗 Водитель' if r.role == 'driver' else '🙋 Пассажир'}\n"
+                f"📍 {r.origin} -> {r.destination}\n"
+                f"📅 {r.ride_date} | {r.start_time}\n"
+                f"{seats_text}\n"
+                f"👤 @{u.username or 'скрыт'}"
+            )
+            await m.answer(txt, parse_mode="Markdown")
+
+# --- КНОПКИ МОИ ПОЕЗДКИ (Выше, чтобы перехватывать команды) ---
+@router.message(F.text == "📋 Мои поездки")
+async def list_rides(m: types.Message, state: FSMContext):
+    await state.clear()
+    
+    async with async_session() as s:
+        user_stmt = await s.execute(select(User.id).where(User.telegram_id == m.from_user.id))
+        u_id_res = user_stmt.scalar()
+        
+        # Если пользователя еще нет в базе (странно, но возможно)
+        if not u_id_res:
+             return await m.answer("Сначала нажмите /start")
+
+        rides_stmt = await s.execute(select(Ride).where(Ride.user_id == u_id_res))
+        rides = rides_stmt.scalars().all()
+        
+        if not rides:
+            return await m.answer("У вас пока нет активных поездок.")
+        
+        for r in rides:
+            txt = f"📍 {r.origin} -> {r.destination}\n📅 {r.ride_date} | {r.start_time}"
+            kb = InlineKeyboardBuilder().button(text="❌ Удалить", callback_data=f"del_{r.id}").as_markup()
+            await m.answer(txt, reply_markup=kb)
+
 # --- ВЫБОР РОЛИ ---
 @router.message(F.text.in_(["🙋 Подвези", "🚗 Подвезу"]))
 async def ask_route(m: types.Message, state: FSMContext):
+    # Сначала очищаем старое состояние, потом ставим новое
+    await state.clear()
+    
     role = "passenger" if "🙋" in m.text else "driver"
     await state.update_data(role=role)
     await state.set_state(RideForm.chatting_with_ai)
@@ -80,23 +136,14 @@ async def ask_route(m: types.Message, state: FSMContext):
     )
     await m.answer(text, parse_mode="Markdown")
 
-# --- ГЛАВНЫЙ ОБРАБОТЧИК ДИАЛОГА ---
-@router.message(RideForm.chatting_with_ai)
-@router.message(F.text & ~F.text.startswith("/"))
+# --- ГЛАВНЫЙ ОБРАБОТЧИК ДИАЛОГА (AI) ---
+# Ловит текст ТОЛЬКО если активно состояние chatting_with_ai
+# И ТОЛЬКО если это не команды меню (на случай, если фильтр выше не сработал)
+@router.message(
+    RideForm.chatting_with_ai, 
+    F.text & ~F.text.startswith("/") & ~F.text.in_({"📋 Мои поездки", "🔍 Найти попутчиков", "🙋 Подвези", "🚗 Подвезу"})
+)
 async def handle_ai_conversation(m: types.Message, state: FSMContext):
-    if m.text in ["📋 Мои поездки", "🔍 Найти попутчиков", "🙋 Подвези", "🚗 Подвезу"]:
-        # Если нажали кнопку меню — выходим из режима AI и передаем управление дальше
-        # Но так как aiogram уже поймал это сообщение здесь, нам нужно вручную вызвать нужную функцию
-        # Или просто сбросить состояние, чтобы пользователь нажал кнопку второй раз (простой вариант)
-        await state.clear()
-        if m.text == "📋 Мои поездки":
-            return await list_rides(m)
-        elif m.text == "🔍 Найти попутчиков":
-            return await find_rides(m)
-        elif "Подвези" in m.text or "Подвезу" in m.text:
-            return await ask_route(m, state)
-        return
-    
     res = await nlu.parse_intent(m.text, m.from_user.id)
     
     if not res:
@@ -175,131 +222,112 @@ async def match_passengers(m: types.Message, new_ride: Ride, res: dict, user: Us
                 except Exception as e:
                     logger.error(f"Ошибка уведомления водителю: {e}")
 
-# --- ПОИСК ПОПУТЧИКОВ ---
-@router.message(F.text == "🔍 Найти попутчиков")
-async def find_rides(m: types.Message):
-    async with async_session() as s:
-        rides_stmt = await s.execute(
-            select(Ride, User).join(User).where(
-                Ride.created_at > datetime.utcnow() - timedelta(days=2),
-                (Ride.role == 'driver') & (Ride.seats > 0) | (Ride.role == 'passenger')
-            ).order_by(Ride.created_at.desc()).limit(10)
-        )
-        rides = rides_stmt.all()
-        
-        if not rides:
-            return await m.answer("Нет актуальных объявлений.")
-        
-        for r, u in rides:
-            seats_text = f"Мест: {r.seats}" if r.role == 'driver' else ""
-            txt = (
-                f"{'🚗 Водитель' if r.role == 'driver' else '🙋 Пассажир'}\n"
-                f"📍 {r.origin} -> {r.destination}\n"
-                f"📅 {r.ride_date} | {r.start_time}\n"
-                f"{seats_text}\n"
-                f"👤 @{u.username or 'скрыт'}"
-            )
-            await m.answer(txt, parse_mode="Markdown")
-
-# --- КНОПКИ МОИ ПОЕЗДКИ ---
-@router.message(F.text == "📋 Мои поездки")
-async def list_rides(m: types.Message):
-    async with async_session() as s:
-        user_stmt = await s.execute(select(User.id).where(User.telegram_id == m.from_user.id))
-        u_id = user_stmt.scalar()
-        rides_stmt = await s.execute(select(Ride).where(Ride.user_id == u_id))
-        rides = rides_stmt.scalars().all()
-        
-        if not rides:
-            return await m.answer("У вас пока нет активных поездок.")
-        
-        for r in rides:
-            txt = f"📍 {r.origin} -> {r.destination}\n📅 {r.ride_date} | {r.start_time}"
-            kb = InlineKeyboardBuilder().button(text="❌ Удалить", callback_data=f"del_{r.id}").as_markup()
-            await m.answer(txt, reply_markup=kb)
-
 # --- CALLBACKS ---
 @router.callback_query(F.data.startswith("take_"))
 async def take_passenger(cb: types.CallbackQuery):
-    _, p_ride_id, d_ride_id = cb.data.split("_")
-    p_ride_id = int(p_ride_id)
-    d_ride_id = int(d_ride_id)
-    
-    async with async_session() as s:
-        driver_ride = await s.get(Ride, d_ride_id)
-        if not driver_ride or driver_ride.seats <= 0:
-            return await cb.answer("Места закончились!", show_alert=True)
+    try:
+        _, p_ride_id, d_ride_id = cb.data.split("_")
+        p_ride_id = int(p_ride_id)
+        d_ride_id = int(d_ride_id)
         
-        # Создаем pending booking
-        new_booking = Booking(
-            driver_ride_id=d_ride_id,
-            passenger_ride_id=p_ride_id,
-            status='pending'
-        )
-        s.add(new_booking)
-        await s.commit()
-        await s.refresh(new_booking)
-        
-        # Уведомляем пассажира
-        p_user_stmt = await s.execute(select(User.telegram_id, User.username).join(Ride).where(Ride.id == p_ride_id))
-        p_tid, p_username = p_user_stmt.first()
-        
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🤝 Еду с вами", callback_data=f"confirm_{new_booking.id}")
-        
-        match_msg = (
-            f"🔔 *Водитель готов вас подвезти!*\n"
-            f"📍 {driver_ride.origin} ➡️ {driver_ride.destination}\n"
-            f"📅 Дата: {driver_ride.ride_date}\n"
-            f"🕒 Время: {driver_ride.start_time}\n"
-            f"👤 Контакт: @{cb.from_user.username or 'скрыт'}"
-        )
-        try:
-            await cb.bot.send_message(p_tid, match_msg, reply_markup=kb.as_markup(), parse_mode="Markdown")
-            await cb.answer("Пассажир уведомлен!")
-            await cb.message.edit_text(cb.message.text + "\n\n📩 Уведомление отправлено пассажиру")
-        except Exception as e:
-            logger.error(f"Ошибка уведомления пассажиру: {e}")
+        async with async_session() as s:
+            driver_ride = await s.get(Ride, d_ride_id)
+            if not driver_ride or driver_ride.seats <= 0:
+                return await cb.answer("Места закончились!", show_alert=True)
+            
+            # Создаем pending booking
+            new_booking = Booking(
+                driver_ride_id=d_ride_id,
+                passenger_ride_id=p_ride_id,
+                status='pending'
+            )
+            s.add(new_booking)
+            await s.commit()
+            await s.refresh(new_booking)
+            
+            # Уведомляем пассажира
+            p_user_stmt = await s.execute(select(User.telegram_id, User.username).join(Ride).where(Ride.id == p_ride_id))
+            res = p_user_stmt.first()
+            if not res:
+                return await cb.answer("Пассажир не найден (удален)", show_alert=True)
+            
+            p_tid, p_username = res
+            
+            kb = InlineKeyboardBuilder()
+            kb.button(text="🤝 Еду с вами", callback_data=f"confirm_{new_booking.id}")
+            
+            match_msg = (
+                f"🔔 *Водитель готов вас подвезти!*\n"
+                f"📍 {driver_ride.origin} ➡️ {driver_ride.destination}\n"
+                f"📅 Дата: {driver_ride.ride_date}\n"
+                f"🕒 Время: {driver_ride.start_time}\n"
+                f"👤 Контакт: @{cb.from_user.username or 'скрыт'}"
+            )
+            try:
+                await cb.bot.send_message(p_tid, match_msg, reply_markup=kb.as_markup(), parse_mode="Markdown")
+                await cb.answer("Пассажир уведомлен!")
+                await cb.message.edit_text(cb.message.text + "\n\n📩 Уведомление отправлено пассажиру")
+            except Exception as e:
+                logger.error(f"Ошибка уведомления пассажиру: {e}")
+                await cb.answer("Ошибка отправки уведомления")
+    except Exception as e:
+        logger.error(f"Error in take_passenger: {e}")
+        await cb.answer("Произошла ошибка")
 
 @router.callback_query(F.data.startswith("confirm_"))
 async def confirm_booking(cb: types.CallbackQuery):
-    _, booking_id = cb.data.split("_")
-    booking_id = int(booking_id)
-    
-    async with async_session() as s:
-        booking = await s.get(Booking, booking_id)
-        if not booking or booking.status != 'pending':
-            return await cb.answer("Бронирование уже обработано!", show_alert=True)
+    try:
+        _, booking_id = cb.data.split("_")
+        booking_id = int(booking_id)
         
-        driver_ride = await s.get(Ride, booking.driver_ride_id)
-        if driver_ride.seats <= 0:
-            booking.status = 'rejected'
+        async with async_session() as s:
+            booking = await s.get(Booking, booking_id)
+            if not booking or booking.status != 'pending':
+                return await cb.answer("Бронирование уже обработано!", show_alert=True)
+            
+            driver_ride = await s.get(Ride, booking.driver_ride_id)
+            if not driver_ride:
+                 return await cb.answer("Поездка водителя не найдена", show_alert=True)
+
+            if driver_ride.seats <= 0:
+                booking.status = 'rejected'
+                await s.commit()
+                await cb.answer("К сожалению, места закончились!", show_alert=True)
+                await cb.message.edit_text(cb.message.text + "\n\n❌ Места закончились")
+                return
+            
+            # Подтверждаем
+            booking.status = 'confirmed'
+            # Уменьшаем количество мест атомарно (или просто через объект, если нет конкуренции)
+            driver_ride.seats -= 1
             await s.commit()
-            await cb.answer("К сожалению, места закончились!", show_alert=True)
-            await cb.message.edit_text(cb.message.text + "\n\n❌ Места закончились")
-            # Уведомляем водителя? Опционально
-            return
-        
-        # Подтверждаем
-        booking.status = 'confirmed'
-        await s.execute(update(Ride).where(Ride.id == booking.driver_ride_id).values(seats=Ride.seats - 1))
-        await s.commit()
-        
-        # Уведомляем обоих
-        d_user_stmt = await s.execute(select(User.telegram_id).join(Ride).where(Ride.id == booking.driver_ride_id))
-        d_tid = d_user_stmt.scalar()
-        
-        await cb.bot.send_message(d_tid, "🎉 Пассажир подтвердил поездку! Приятного пути!")
-        await cb.answer("Поездка подтверждена!")
-        await cb.message.edit_text(cb.message.text + "\n\n✅ Подтверждено")
+            
+            # Уведомляем обоих
+            d_user_stmt = await s.execute(select(User.telegram_id).join(Ride).where(Ride.id == booking.driver_ride_id))
+            d_tid = d_user_stmt.scalar()
+            
+            if d_tid:
+                await cb.bot.send_message(d_tid, "🎉 Пассажир подтвердил поездку! Приятного пути!")
+            
+            await cb.answer("Поездка подтверждена!")
+            await cb.message.edit_text(cb.message.text + "\n\n✅ Подтверждено")
+    except Exception as e:
+        logger.error(f"Error in confirm_booking: {e}")
+        await cb.answer("Ошибка подтверждения")
 
 @router.callback_query(F.data.startswith("del_"))
 async def delete_ride(cb: types.CallbackQuery):
-    r_id = int(cb.data.split("_")[1])
-    async with async_session() as s:
-        ride = await s.get(Ride, r_id)
-        if ride:
-            await s.delete(ride)
-            await s.commit()
-            await cb.answer("Поездка удалена")
-            await cb.message.delete()
+    try:
+        r_id = int(cb.data.split("_")[1])
+        async with async_session() as s:
+            ride = await s.get(Ride, r_id)
+            if ride:
+                await s.delete(ride)
+                await s.commit()
+                await cb.answer("Поездка удалена")
+                await cb.message.delete()
+            else:
+                await cb.answer("Поездка уже удалена", show_alert=True)
+                await cb.message.delete()
+    except Exception as e:
+        logger.error(f"Error in delete_ride: {e}")
