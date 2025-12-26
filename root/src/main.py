@@ -2,7 +2,7 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from src.config import BOT_TOKEN
-from src.handlers import router, auto_clean_old_rides
+from src.bot.handlers import router, auto_clean_old_rides
 from src.database.session import init_models
 
 # Настройка логирования
