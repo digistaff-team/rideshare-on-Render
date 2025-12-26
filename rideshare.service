@@ -1,0 +1,21 @@
+[Unit]
+Description=RideShare Telegram Bot
+After=network.target
+
+[Service]
+Type=exec
+User=root
+WorkingDirectory=/root/ride_share_bot
+EnvironmentFile=/root/ride_share_bot/.env
+Environment=PYTHONPATH=/root/ride_share_bot
+# Принудительно чистим порт перед стартом
+ExecStartPre=/usr/bin/bash -c "/usr/bin/fuser -k 8000/tcp || true"
+ExecStart=/root/ride_share_bot/venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=1
+# Мгновенно убиваем процесс при остановке, не дожидаясь таймаутов
+KillSignal=SIGKILL
+TimeoutStopSec=2
+
+[Install]
+WantedBy=multi-user.target

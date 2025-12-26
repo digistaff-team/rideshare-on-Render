@@ -1,0 +1,23 @@
+import os
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, 
+async_sessionmaker
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = create_async_engine(
+    DATABASE_URL, 
+    echo=False,
+    future=True
+)
+
+async_session = async_sessionmaker(
+    engine, 
+    expire_on_commit=False, 
+    class_=AsyncSession
+)
+
+async def init_models():
+    from src.database.models import Base
+    async with engine.begin() as conn:
+        # Создаем таблицы, если их нет
+        await conn.run_sync(Base.metadata.create_all)
