@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-.env
-.zip
-.sh
-.venv/
-.idea/
-.vscode/
-pg_data/
