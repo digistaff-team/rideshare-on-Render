@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, BigInteger, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, BigInteger, ForeignKey, DateTime, Date  # <-- Добавили Date
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 
@@ -12,7 +12,6 @@ class User(Base):
     username = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    # Связь с поездками
     rides = relationship("Ride", back_populates="user", cascade="all, delete-orphan")
 
 class Ride(Base):
@@ -21,17 +20,17 @@ class Ride(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     
-    # Данные маршрута
-    origin = Column(String(255), nullable=False, index=True)      # Откуда
-    destination = Column(String(255), nullable=False, index=True) # Куда
+    origin = Column(String(255), nullable=False, index=True)
+    destination = Column(String(255), nullable=False, index=True)
     
-    # Время и дата
-    ride_date = Column(String(100), nullable=True, index=True)    # Поле для хранения даты (напр. "2025-12-27")
-    start_time = Column(String(100), nullable=True)   # Поле для хранения времени (напр. "10:00")
+    # ИЗМЕНЕНИЕ: Тип Date вместо String
+    ride_date = Column(Date, nullable=False, index=True) 
+    
+    start_time = Column(String(100), nullable=True)
     
     initial_seats = Column(Integer, nullable=False)
     seats = Column(Integer, nullable=False)
-    role = Column(String(50))                         # driver или passenger
+    role = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow)
     
     user = relationship("User", back_populates="rides")
@@ -42,5 +41,5 @@ class Booking(Base):
     id = Column(Integer, primary_key=True)
     driver_ride_id = Column(Integer, ForeignKey("rides.id"))
     passenger_ride_id = Column(Integer, ForeignKey("rides.id"))
-    status = Column(String(50), default='pending')    # pending, confirmed, rejected
+    status = Column(String(50), default='pending')
     created_at = Column(DateTime, default=datetime.utcnow)
