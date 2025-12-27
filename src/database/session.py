@@ -23,3 +23,4 @@ async def init_models():
     async with engine.begin() as conn:
         # Создаем таблицы, если их нет
         await conn.run_sync(Base.metadata.create_all)
+
