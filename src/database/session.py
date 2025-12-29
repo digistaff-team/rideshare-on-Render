@@ -1,5 +1,5 @@
 import os
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 # Получаем URL из переменных окружения
 DATABASE_URL = os.getenv("DATABASE_URL")
