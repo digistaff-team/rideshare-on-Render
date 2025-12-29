@@ -6,14 +6,17 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL не найдена")
 
+# Исправления URL
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 
+# Очистка от параметров pgbouncer (они мешают asyncpg)
 if "?pgbouncer=true" in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("?pgbouncer=true", "")
 if "&pgbouncer=true" in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("&pgbouncer=true", "")
 
+# Создание движка
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
@@ -22,7 +25,6 @@ engine = create_async_engine(
     }
 )
 
-# Вот здесь AsyncSession теперь будет доступен
 async_session = async_sessionmaker(
     engine, 
     expire_on_commit=False, 
