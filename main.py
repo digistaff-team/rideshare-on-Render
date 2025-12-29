@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Импорты ваших модулей (убедитесь, что пути правильные)
-from src.database.session import engine, Base
+from src.database.session import engine, init_models
 from src.bot.handlers import router, auto_clean_old_rides
 
 # --- Настройка логирования ---
@@ -39,9 +39,10 @@ async def start_web_server():
 # --- Основная функция ---
 async def main():
     # 1. Инициализация базы данных (создание таблиц)
-    async with engine.begin() as conn:
+    # async with engine.begin() as conn:
         # await conn.run_sync(Base.metadata.drop_all) # Раскомментировать, если нужно сбросить БД
-        await conn.run_sync(Base.metadata.create_all)
+        #await conn.run_sync(Base.metadata.create_all)
+    await init_models()
 
     # 2. Настройка бота
     bot_token = os.getenv("BOT_TOKEN")
