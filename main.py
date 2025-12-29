@@ -8,7 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # Импорты ваших модулей (убедитесь, что пути правильные)
 from src.database.session import engine, Base
-from handlers import router, auto_clean_old_rides
+from src.bot.handlers import router, auto_clean_old_rides
 
 # --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
