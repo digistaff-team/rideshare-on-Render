@@ -1,5 +1,10 @@
 import os
+import logging
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.pool import NullPool  # 👈 Импортируем NullPool
+
+# Настройка логгера для отладки
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -10,18 +15,21 @@ if not DATABASE_URL:
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 
-# Очистка от параметров pgbouncer (они мешают asyncpg)
+# Очистка параметров pgbouncer
 if "?pgbouncer=true" in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("?pgbouncer=true", "")
 if "&pgbouncer=true" in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("&pgbouncer=true", "")
 
-# Создание движка
+# 👇 ЯВНЫЙ ПРИНТ ДЛЯ ЛОГОВ
+print("🔥🔥🔥 DEBUG: ЗАГРУЗКА session.py С НОВЫМИ НАСТРОЙКАМИ (NullPool + cache=0) 🔥🔥🔥")
+
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
+    poolclass=NullPool,  # 👈 Отключаем удержание соединений в памяти бота
     connect_args={
-        "statement_cache_size": 0
+        "statement_cache_size": 0  # 👈 Запрещаем asyncpg кэшировать запросы
     }
 )
 
