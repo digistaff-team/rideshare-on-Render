@@ -1,60 +1,81 @@
-import os
-import json
-import httpx
+import aiohttp
 import logging
-import re
+import json
+import os
+import re  # 👈 Добавляем модуль регулярных выражений
 
 logger = logging.getLogger(__name__)
 
 class NLUProcessor:
     def __init__(self):
-        self.api_token = os.getenv("PROTALK_TOKEN")
-        self.bot_id = int(os.getenv("PROTALK_BOT_ID", 0))
-        self.base_url = f"https://api.pro-talk.ru/api/v1.0/ask/{self.api_token}"
+        self.api_token = os.getenv("PRO_TALK_TOKEN") 
+        self.bot_id = os.getenv("PRO_TALK_BOT_ID")
+        self.base_url = "https://api.pro-talk.ru/api/v1.0/ask"
 
-    async def parse_intent(self, text: str, user_id: int, role: str = None):
-        """
-        Отправляет запрос в Pro-Talk с указанием роли пользователя.
-        """
-        # Формируем контекст для LLM
-        context_prefix = ""
-        if role == "driver":
-            context_prefix = "[Роль: Водитель. Предлагаю поездку] "
-        elif role == "passenger":
-            context_prefix = "[Роль: Пассажир. Ищу поездку] "
-            
-        full_message = f"{context_prefix}{text}"
+    async def parse_intent(self, text: str, user_id: int) -> dict:
+        if not self.api_token or not self.bot_id:
+             logger.error("❌ Tokens missing")
+             return {}
 
+        url = f"{self.base_url}/{self.api_token}"
         payload = {
-            "bot_id": self.bot_id, 
-            "chat_id": str(user_id), 
-            "message": full_message
+            "bot_id": int(self.bot_id),
+            "chat_id": str(user_id),
+            "message": text
         }
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(self.base_url, json=payload, timeout=25.0)
-                data = response.json()
-                ai_text = data.get("done", "")
-                
-                # Ищем JSON в ответе
-                matches = list(re.finditer(r'\{.*?\}', ai_text, re.DOTALL))
-                if matches:
-                    last_match = matches[-1]
-                    try:
-                        res = json.loads(last_match.group())
-                        
-                        # Если не хватает данных, возвращаем только текст
-                        if not res.get("origin") or not res.get("destination") or not res.get("date"):
-                             return {"raw_text": ai_text}
 
-                        res["raw_text"] = ai_text.replace(last_match.group(), "").strip()
-                        return res
+        print(f"📡 NLU REQUEST: {text}")
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as resp:
+                    resp_text = await resp.text()
+                    
+                    if resp.status != 200:
+                        logger.error(f"❌ API Error {resp.status}: {resp_text}")
+                        return {}
+
+                    # Парсим ответ от самого API (там есть поле "done")
+                    try:
+                        api_response = json.loads(resp_text)
+                        bot_reply = api_response.get("done", "")
                     except json.JSONDecodeError:
-                        return {"raw_text": ai_text}
-                
-                return {"raw_text": ai_text}
-                
+                        logger.error("❌ Invalid API response format")
+                        return {}
+                    
+                    print(f"📥 BOT REPLY: {bot_reply}")
+
+                    # --- САМОЕ ГЛАВНОЕ: Ищем JSON внутри текста ответа ---
+                    # Ищем всё, что похоже на JSON-объект {...}
+                    # Флаг DOTALL позволяет захватывать переносы строк
+                    json_match = re.search(r'\{.*\}', bot_reply, re.DOTALL)
+                    
+                    result_data = {}
+
+                    if json_match:
+                        json_str = json_match.group(0)
+                        try:
+                            # Пытаемся распарсить найденный кусок
+                            extracted_data = json.loads(json_str)
+                            
+                            # Если успешно - это наши данные
+                            result_data = extracted_data
+                            
+                            # Убираем JSON из текста, чтобы показать пользователю чистый ответ
+                            clean_text = bot_reply.replace(json_str, "").strip()
+                            result_data["raw_text"] = clean_text
+                            
+                            print(f"✅ EXTRACTED DATA: {result_data}")
+                            return result_data
+                            
+                        except json.JSONDecodeError:
+                            print("⚠️ JSON found but invalid")
+                            pass
+                    
+                    # Если JSON не найден или не валиден - возвращаем просто текст
+                    # Это значит, что бот еще уточняет детали
+                    return {"raw_text": bot_reply}
+
         except Exception as e:
-            logger.error(f"NLU Parsing Error: {e}")
-            return None
+            logger.error(f"❌ Exception: {e}")
+            return {}
