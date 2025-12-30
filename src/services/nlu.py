@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 class NLUProcessor:
     def __init__(self):
+        # Используем переменные окружения PROTALK_*
         self.api_token = os.getenv("PROTALK_TOKEN") 
         self.bot_id = os.getenv("PROTALK_BOT_ID")
         self.base_url = "https://api.pro-talk.ru/api/v1.0/ask"
@@ -57,7 +58,7 @@ class NLUProcessor:
                     
                     # 1. Ищем самый большой JSON-объект {...}
                     # Используем жадный поиск для json-структуры
-                    json_candidates = re.findall(r'\{.*\}', bot_reply, re.DOTALL)
+                    json_candidates = re.findall(r"\{.*\}", bot_reply, re.DOTALL)
                     
                     result_data = {}
                     
@@ -70,14 +71,19 @@ class NLUProcessor:
                             pass
                     
                     # --- 3. Очистка текста от мусора ---
-                    # Удаляем ВСЕ блоки кода между ``` и ```
-                    clean_text = re.sub(r'```.*?```
                     
-                    # Удаляем одиночные ``` если остались
-                    clean_text = clean_text.replace("```
+                    # Паттерн для поиска блоков кода ``````
+                    # Используем двойные кавычки для надежности
+                    code_block_pattern = r"``````"
+                    
+                    # Удаляем ВСЕ блоки кода (включая ``````)
+                    clean_text = re.sub(code_block_pattern, "", bot_reply, flags=re.DOTALL).strip()
+                    
+                    # Удаляем одиночные ```
+                    clean_text = clean_text.replace("```", "").strip()
 
-                    # Если после очистки остались висящие "json" или пустые строки, почистим их
-                    clean_text = re.sub(r'^\s*json\s*', '', clean_text, flags=re.MULTILINE).strip()
+                    # Если после очистки остались висящие слова "json" в начале строк
+                    clean_text = re.sub(r"^\s*json\s*", "", clean_text, flags=re.MULTILINE).strip()
                     
                     # Возвращаем результат
                     if result_data:
