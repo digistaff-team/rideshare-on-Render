@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 class NLUProcessor:
     def __init__(self):
+        # Обновленные имена переменных окружения
         self.api_token = os.getenv("PROTALK_TOKEN") 
         self.bot_id = os.getenv("PROTALK_BOT_ID")
         self.base_url = "https://api.pro-talk.ru/api/v1.0/ask"
@@ -56,8 +57,8 @@ class NLUProcessor:
 
                     # --- 2. Логика поиска JSON в ответе ---
                     
-                    # Попытка А: Ищем блок кода Markdown `````` или просто ``````
-                    # (?s) включает DOTALL (точка захватывает перенос строки)
+                    # Попытка А: Ищем блок кода Markdown.
+                    # [\w\s]* позволяет ловить ```json, ``````JSON и т.д.
                     markdown_match = re.search(r'``````', bot_reply, re.DOTALL)
                     
                     # Попытка Б: Ищем просто JSON объект {...}, если маркдауна нет
@@ -81,7 +82,7 @@ class NLUProcessor:
                             extracted_data = json.loads(found_json_str)
                             result_data = extracted_data
                             
-                            # Удаляем технический JSON из текста, чтобы показать пользователю только чистый ответ
+                            # Удаляем технический JSON из текста
                             if full_match_str:
                                 clean_text = bot_reply.replace(full_match_str, "").strip()
                             
@@ -89,7 +90,6 @@ class NLUProcessor:
                             return result_data
                             
                         except json.JSONDecodeError:
-                            # Если нашли что-то похожее на JSON, но это не валидный JSON
                             pass
                     
                     # Если JSON не нашли — возвращаем просто текст ответа
