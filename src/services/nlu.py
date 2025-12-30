@@ -2,7 +2,7 @@ import aiohttp
 import logging
 import json
 import os
-import re  # 👈 Добавляем модуль регулярных выражений
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -24,57 +24,58 @@ class NLUProcessor:
             "message": text
         }
 
-        print(f"📡 NLU REQUEST: {text}")
-
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload) as resp:
                     resp_text = await resp.text()
                     
                     if resp.status != 200:
-                        logger.error(f"❌ API Error {resp.status}: {resp_text}")
+                        logger.error(f"❌ API Error {resp.status}")
                         return {}
 
-                    # Парсим ответ от самого API (там есть поле "done")
                     try:
                         api_response = json.loads(resp_text)
                         bot_reply = api_response.get("done", "")
                     except json.JSONDecodeError:
-                        logger.error("❌ Invalid API response format")
                         return {}
-                    
-                    print(f"📥 BOT REPLY: {bot_reply}")
 
-                    # --- САМОЕ ГЛАВНОЕ: Ищем JSON внутри текста ответа ---
-                    # Ищем всё, что похоже на JSON-объект {...}
-                    # Флаг DOTALL позволяет захватывать переносы строк
-                    json_match = re.search(r'\{.*\}', bot_reply, re.DOTALL)
+                    # 1. Сначала ищем JSON-блок в Markdown (``````)
+                    markdown_json_match = re.search(r'``````', bot_reply, re.DOTALL)
                     
+                    # 2. Или просто JSON-объект {...}
+                    simple_json_match = re.search(r'\{.*\}', bot_reply, re.DOTALL)
+
                     result_data = {}
+                    clean_text = bot_reply
 
-                    if json_match:
-                        json_str = json_match.group(0)
+                    # Определяем, что мы нашли
+                    found_json_str = None
+                    full_match_str = None # Что нужно вырезать из текста
+
+                    if markdown_json_match:
+                        found_json_str = markdown_json_match.group(1) # Только содержимое {}
+                        full_match_str = markdown_json_match.group(0) # Весь блок ``````
+                    elif simple_json_match:
+                        found_json_str = simple_json_match.group(0)
+                        full_match_str = found_json_str
+
+                    if found_json_str:
                         try:
-                            # Пытаемся распарсить найденный кусок
-                            extracted_data = json.loads(json_str)
-                            
-                            # Если успешно - это наши данные
+                            extracted_data = json.loads(found_json_str)
                             result_data = extracted_data
                             
-                            # Убираем JSON из текста, чтобы показать пользователю чистый ответ
-                            clean_text = bot_reply.replace(json_str, "").strip()
-                            result_data["raw_text"] = clean_text
+                            # Вырезаем найденный блок из текста
+                            if full_match_str:
+                                clean_text = bot_reply.replace(full_match_str, "").strip()
                             
-                            print(f"✅ EXTRACTED DATA: {result_data}")
+                            result_data["raw_text"] = clean_text
                             return result_data
                             
                         except json.JSONDecodeError:
-                            print("⚠️ JSON found but invalid")
                             pass
                     
-                    # Если JSON не найден или не валиден - возвращаем просто текст
-                    # Это значит, что бот еще уточняет детали
-                    return {"raw_text": bot_reply}
+                    # Если JSON не нашли или он битый
+                    return {"raw_text": clean_text}
 
         except Exception as e:
             logger.error(f"❌ Exception: {e}")
