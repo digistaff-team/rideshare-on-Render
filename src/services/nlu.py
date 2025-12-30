@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 class NLUProcessor:
     def __init__(self):
-        # Обновленные имена переменных окружения
         self.api_token = os.getenv("PROTALK_TOKEN") 
         self.bot_id = os.getenv("PROTALK_BOT_ID")
         self.base_url = "https://api.pro-talk.ru/api/v1.0/ask"
@@ -49,50 +48,42 @@ class NLUProcessor:
 
                     try:
                         api_response = json.loads(resp_text)
-                        # Получаем текстовый ответ от бота
                         bot_reply = api_response.get("done", "")
                     except json.JSONDecodeError:
                         logger.error("❌ Failed to decode API response")
                         return {}
 
-                    # --- 2. Логика поиска JSON в ответе ---
+                    # --- 2. Логика поиска JSON (более надежная) ---
                     
-                    # Попытка А: Ищем блок кода Markdown.
-                    # [\w\s]* позволяет ловить ```json, ``````JSON и т.д.
-                    markdown_match = re.search(r'``````', bot_reply, re.DOTALL)
+                    # 1. Ищем самый большой JSON-объект {...}
+                    # Используем жадный поиск для json-структуры
+                    json_candidates = re.findall(r'\{.*\}', bot_reply, re.DOTALL)
                     
-                    # Попытка Б: Ищем просто JSON объект {...}, если маркдауна нет
-                    simple_match = re.search(r'\{.*?\}', bot_reply, re.DOTALL)
-
                     result_data = {}
-                    clean_text = bot_reply
-                    found_json_str = None
-                    full_match_str = None
-
-                    if markdown_match:
-                        found_json_str = markdown_match.group(1) # Содержимое скобок {}
-                        full_match_str = markdown_match.group(0) # Весь блок ``````
-                    elif simple_match:
-                        found_json_str = simple_match.group(0)
-                        full_match_str = found_json_str
-
-                    if found_json_str:
+                    
+                    if json_candidates:
+                        # Берем последний кандидат, обычно там финальный JSON
+                        candidate = json_candidates[-1]
                         try:
-                            # Пытаемся распарсить найденный кусок
-                            extracted_data = json.loads(found_json_str)
-                            result_data = extracted_data
-                            
-                            # Удаляем технический JSON из текста
-                            if full_match_str:
-                                clean_text = bot_reply.replace(full_match_str, "").strip()
-                            
-                            result_data["raw_text"] = clean_text
-                            return result_data
-                            
+                            result_data = json.loads(candidate)
                         except json.JSONDecodeError:
                             pass
                     
-                    # Если JSON не нашли — возвращаем просто текст ответа
+                    # --- 3. Очистка текста от мусора ---
+                    # Удаляем ВСЕ блоки кода между ``` и ```
+                    clean_text = re.sub(r'```.*?```
+                    
+                    # Удаляем одиночные ``` если остались
+                    clean_text = clean_text.replace("```
+
+                    # Если после очистки остались висящие "json" или пустые строки, почистим их
+                    clean_text = re.sub(r'^\s*json\s*', '', clean_text, flags=re.MULTILINE).strip()
+                    
+                    # Возвращаем результат
+                    if result_data:
+                        result_data["raw_text"] = clean_text
+                        return result_data
+                    
                     return {"raw_text": clean_text}
 
         except Exception as e:
