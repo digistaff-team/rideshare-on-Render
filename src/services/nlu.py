@@ -54,35 +54,37 @@ class NLUProcessor:
                         logger.error("❌ Failed to decode API response")
                         return {}
 
-                    # --- 2. Логика поиска JSON (более надежная) ---
+                    # --- 2. Логика поиска и удаления JSON ---
                     
-                    # 1. Ищем самый большой JSON-объект {...}
-                    # Используем жадный поиск для json-структуры
-                    json_candidates = re.findall(r"\{.*\}", bot_reply, re.DOTALL)
+                    # Ищем JSON-объект {...}
+                    # Мы ищем все совпадения, чтобы найти последний (обычно самый полный)
+                    # Используем re.DOTALL, чтобы захватить переносы строк внутри JSON
+                    json_matches = list(re.finditer(r"\{.*\}", bot_reply, re.DOTALL))
                     
                     result_data = {}
+                    clean_text = bot_reply
                     
-                    if json_candidates:
-                        # Берем последний кандидат, обычно там финальный JSON
-                        candidate = json_candidates[-1]
+                    if json_matches:
+                        # Берем последний найденный блок
+                        last_match = json_matches[-1]
+                        json_str = last_match.group(0)
+                        
                         try:
-                            result_data = json.loads(candidate)
+                            result_data = json.loads(json_str)
+                            
+                            # Если парсинг прошел успешно, ВЫРЕЗАЕМ этот кусок из текста
+                            # replace(..., 1) удаляет только одно вхождение (на всякий случай)
+                            # но лучше использовать строгую замену по позиции, если возможно,
+                            # но replace здесь сработает отлично, т.к. текст точный.
+                            clean_text = bot_reply.replace(json_str, "").strip()
+                            
                         except json.JSONDecodeError:
                             pass
                     
-                    # --- 3. Очистка текста от мусора ---
-                    
-                    # Паттерн для поиска блоков кода ``````
-                    # Используем двойные кавычки для надежности
-                    code_block_pattern = r"``````"
-                    
-                    # Удаляем ВСЕ блоки кода (включая ``````)
-                    clean_text = re.sub(code_block_pattern, "", bot_reply, flags=re.DOTALL).strip()
-                    
-                    # Удаляем одиночные ```
+                    # --- 3. Финальная зачистка ---
+                    # Удаляем остатки Markdown-оберток (```json, ```, и т.д.), если они были ВОКРУГ удаленного JSON
+                    clean_text = re.sub(r"```.*?```", "", clean_text, flags=re.DOTALL).strip()
                     clean_text = clean_text.replace("```", "").strip()
-
-                    # Если после очистки остались висящие слова "json" в начале строк
                     clean_text = re.sub(r"^\s*json\s*", "", clean_text, flags=re.MULTILINE).strip()
                     
                     # Возвращаем результат
