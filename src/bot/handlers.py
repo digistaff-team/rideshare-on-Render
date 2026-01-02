@@ -209,9 +209,9 @@ async def ask_route(m: types.Message, state: FSMContext):
     await state.set_state(RideForm.chatting_with_ai)
     
     text = (
-        "Напишите маршрут поездки, например: <i>'Из Здравого в Краснодар завтра в 9 утра'</i>."
+        "Напишите маршрут, дату и время вашей поездки, например: <i>'Из Сказочного края в Краснодар завтра в 9 утра, есть два места'</i>."
         if role == "passenger" else
-        "Напишите детали: <i>'Еду из Краснодара в Здравое 27.12 в 18:00, есть 3 места'</i>."
+        "Напишите о желаемой поездке, например: <i>'Из Краснодара в Сказочный сегодня в 18:00, одно место'</i>."
     )
     await m.answer(text, parse_mode="HTML")
 
@@ -412,7 +412,7 @@ async def take_passenger(cb: types.CallbackQuery):
         async with async_session() as s:
             driver_ride = await s.get(Ride, d_ride_id)
             if not driver_ride or driver_ride.seats <= 0:
-                return await cb.answer("Места закончились!", show_alert=True)
+                return await cb.answer("Места закончились🤷🏻‍♂️", show_alert=True)
             
             new_booking = Booking(
                 driver_ride_id=d_ride_id,
@@ -524,3 +524,4 @@ async def delete_ride(cb: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Error in delete_ride: {e}")
         await cb.answer("Ошибка при удалении")
+
