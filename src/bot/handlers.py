@@ -141,7 +141,7 @@ async def start(m: types.Message, state: FSMContext):
 async def find_rides(m: types.Message, state: FSMContext):
     await state.clear()
     
-    async with async_session() as s:
+async with async_session() as s:
     # Получаем текущую дату и время для фильтрации
     now = datetime.now()
     today = now.date()
@@ -554,6 +554,7 @@ async def delete_ride(cb: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Error in delete_ride: {e}")
         await cb.answer("Ошибка при удалении")
+
 
 
 
