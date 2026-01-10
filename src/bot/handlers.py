@@ -141,64 +141,66 @@ async def start(m: types.Message, state: FSMContext):
 async def find_rides(m: types.Message, state: FSMContext):
     await state.clear()
     
-async with async_session() as s:
-    # Получаем текущую дату и время для фильтрации
-    now = datetime.now()
-    today = now.date()
-    current_time = now.time()
-    
-    # Ищем только водителей, у которых есть свободные места
-    rides_stmt = await s.execute(
-        select(Ride, User).join(User).where(
-            Ride.role == 'driver',
-            Ride.seats > 0,
-            Ride.ride_date >= today  # Дата не раньше сегодняшней
-        ).order_by(Ride.ride_date.asc(), Ride.created_at.desc()).limit(20)
-    )
-    all_rides = rides_stmt.all()
-    
-    # Фильтруем поездки по времени
-    rides = []
-    for r, u in all_rides:
-        # Если дата в будущем - всегда показываем
-        if r.ride_date > today:
-            rides.append((r, u))
-        # Если дата сегодня - проверяем время
-        elif r.ride_date == today:
-            # Если время не указано или "По договоренности" - показываем
-            if not r.start_time or r.start_time == "По договоренности":
-                rides.append((r, u))
-            else:
-                # Парсим время поездки
-                try:
-                    ride_time = datetime.strptime(r.start_time, "%H:%M").time()
-                    # Показываем только если время в будущем
-                    if ride_time > current_time:
-                        rides.append((r, u))
-                except ValueError:
-                    # Если формат времени неправильный, всё равно показываем
-                    rides.append((r, u))
+    async with async_session() as s:
+        # Получаем текущую дату и время для фильтрации
+        now = datetime.now()
+        today = now.date()
+        current_time = now.time()
         
-        # Ограничиваем до 10 актуальных поездок
-        if len(rides) >= 10:
-            break
-    
-    if not rides:
-        return await m.answer("Нет актуальных объявлений водителей.")
-    
-    for r, u in rides:
-        role_icon = '🚗 Водитель'
-        seats_text = f"Мест: {r.seats}"
-        
-        username = html.escape(u.username or 'скрыт')
-        
-        txt = (
-            f"<b>{role_icon}</b> @{username}\n"
-            f"📍 {html.escape(r.origin)} -> {html.escape(r.destination)}\n"
-            f"📅 {fmt_date(r.ride_date)} | {r.start_time}\n"
-            f"💺 {seats_text}\n"           
+        # Ищем только водителей, у которых есть свободные места
+        rides_stmt = await s.execute(
+            select(Ride, User).join(User).where(
+                Ride.role == 'driver',
+                Ride.seats > 0,
+                Ride.ride_date >= today  # Дата не раньше сегодняшней
+            ).order_by(Ride.ride_date.asc(), Ride.created_at.desc()).limit(20)
         )
-        await m.answer(txt, parse_mode="HTML")
+        all_rides = rides_stmt.all()
+        
+        # Фильтруем поездки по времени
+        rides = []
+        for r, u in all_rides:
+            # Если дата в будущем - всегда показываем
+            if r.ride_date > today:
+                rides.append((r, u))
+            # Если дата сегодня - проверяем время
+            elif r.ride_date == today:
+                # Если время не указано или "По договоренности" - показываем
+                if not r.start_time or r.start_time == "По договоренности":
+                    rides.append((r, u))
+                else:
+                    # Парсим время поездки
+                    try:
+                        ride_time = datetime.strptime(r.start_time, "%H:%M").time()
+                        # Показываем только если время в будущем
+                        if ride_time > current_time:
+                            rides.append((r, u))
+                    except ValueError:
+                        # Если формат времени неправильный, всё равно показываем
+                        rides.append((r, u))
+            
+            # Ограничиваем до 10 актуальных поездок
+            if len(rides) >= 10:
+                break
+        
+        if not rides:
+            return await m.answer("Нет актуальных объявлений водителей.")
+        
+        for r, u in rides:
+            role_icon = '🚗 Водитель'
+            seats_text = f"Мест: {r.seats}"
+            
+            username = html.escape(u.username or 'скрыт')
+            
+            txt = (
+                f"<b>{role_icon}</b>\n"
+                f"📍 {html.escape(r.origin)} -> {html.escape(r.destination)}\n"
+                f"📅 {fmt_date(r.ride_date)} | {r.start_time}\n"
+                f"{seats_text}\n"
+                f"👤 @{username}"
+            )
+            await m.answer(txt, parse_mode="HTML")
+
 
 # --- КНОПКИ МОИ ПОЕЗДКИ ---
 @router.message(Command("my_rides"))
@@ -554,6 +556,7 @@ async def delete_ride(cb: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Error in delete_ride: {e}")
         await cb.answer("Ошибка при удалении")
+
 
 
 
