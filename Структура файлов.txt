@@ -1,18 +1,18 @@
-rideshare_bot/
-├── .env                  # (НЕ ЗАГРУЖАТЬ НА GITHUB) Секретные переменные
-├── .gitignore            # Исключения для git
-├── docker-compose.yml    # Инструкция для запуска двух контейнеров (Бот + БД)
-├── Dockerfile            # Инструкция для сборки образа бота
-├── requirements.txt      # Зависимости Python
-└── src/                  # Исходный код
-    ├── __init__.py       # Пустой файл
-    ├── main.py           # Точка входа (создаем новый)
-    ├── config.py         # Загрузка конфигурации (создаем новый)
-    ├── handlers.py       # (Ваш файл handlers.txt)
+project_root/
+├── .env                      # уже есть
+├── main.py                   # уже есть
+├── requirements.txt          # ОБЯЗАТЕЛЬНО НУЖЕН
+├── Dockerfile                # рекомендуется для деплоя
+├── docker-compose.yml        # рекомендуется, если используете PostgreSQL локально
+└── src/
+    ├── __init__.py           # пустой файл, чтобы Python видел src как пакет
+    ├── bot/
+    │   ├── __init__.py       # пустой
+    │   └── handlers.py       # уже есть
     ├── database/
-    │   ├── __init__.py   # Пустой файл
-    │   ├── models.py     # (Ваш файл models.txt)
-    │   └── session.py    # (Ваш файл session.txt)
+    │   ├── __init__.py       # пустой
+    │   ├── session.py        # уже есть
+    │   └── models.py         # уже есть
     └── services/
-        ├── __init__.py   # Пустой файл
-        └── nlu.py        # (Ваш файл nlu.txt)
+        ├── __init__.py       # пустой
+        └── nlu.py            # уже есть
