@@ -1,0 +1,38 @@
+# Environment variables
+.env
+*.env
+.env.*
+env.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyclass
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+env/
+venv/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups
+*-backup/
+rideshare-on-Render-backup/
+
+# Test files
+test_db.py
