@@ -1,32 +1,37 @@
 import os
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
 
-# Получаем URL
-raw_url = os.getenv("DATABASE_URL")
+# Создаём Base для моделей
+Base = declarative_base()
 
-if not raw_url:
-    raise ValueError("DATABASE_URL is missing!")
+# Получаем DATABASE_URL из переменных окружения
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# ПРИНУДИТЕЛЬНАЯ ЗАМЕНА СХЕМЫ
-# Мы используем asyncpg, поэтому URL ОБЯЗАН начинаться с postgresql+asyncpg://
-# Даже если там было postgresql:// или postgres:// - мы это перепишем.
+if DATABASE_URL:
+    # Render использует postgres://, но asyncpg нужен postgresql+asyncpg://
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+    
+    print(f"DEBUG: Connecting to DB with scheme: {DATABASE_URL.split(':')[0]}")
+    engine = create_async_engine(DATABASE_URL, echo=False)
+else:
+    # Fallback на SQLite для локальной разработки
+    print("DEBUG: Using SQLite database")
+    from aiosqlite import connect
+    DATABASE_URL = "sqlite+aiosqlite:///./test_bot.db"
+    engine = create_async_engine(DATABASE_URL, echo=False)
 
-# Разбираем URL (грубо), чтобы заменить только начало
-scheme, rest = raw_url.split("://", 1)
-DATABASE_URL = f"postgresql+asyncpg://{rest}"
-
-print(f"DEBUG: Connecting to DB with scheme: {DATABASE_URL.split('://')[0]}")
-
-# Создаем движок
-engine = create_async_engine(DATABASE_URL, echo=False)
-
+# Создаём фабрику сессий
 async_session = async_sessionmaker(
-    engine, 
-    expire_on_commit=False, 
-    class_=AsyncSession
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False
 )
 
+
 async def init_models():
-    from src.database.models import Base
+    """Создание таблиц в базе данных"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    print("✅ Database tables created/verified")
