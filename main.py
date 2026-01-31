@@ -39,9 +39,13 @@ async def start_web_server():
 # --- Основная функция ---
 async def main():
     # 1. Инициализация базы данных (создание таблиц)
-    # async with engine.begin() as conn:
+    # async with engine.begin() as conn: # Раскомментировать, если нужно сбросить БД
         # await conn.run_sync(Base.metadata.drop_all) # Раскомментировать, если нужно сбросить БД
-        #await conn.run_sync(Base.metadata.create_all)
+        #await conn.run_sync(Base.metadata.create_all) # Раскомментировать, если нужно сбросить БД
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)  # Удалить старые
+        await conn.run_sync(Base.metadata.create_all)  # Создать новые
+        
     await init_models()
 
     # 2. Настройка бота
