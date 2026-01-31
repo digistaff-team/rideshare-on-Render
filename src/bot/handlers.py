@@ -17,7 +17,7 @@ from src.database.session import async_session
 from src.database.models import User, Ride, Booking
 from src.services.nlu import NLUProcessor
 
-    logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 router = Router()
 nlu = NLUProcessor()
 
@@ -106,10 +106,10 @@ async def auto_clean_old_rides():
                 await session.execute(delete(Ride).where(Ride.created_at < limit))
                 await session.execute(delete(Booking).where(Booking.created_at < limit))
                 await session.commit()
-    logger.info("Фоновая очистка базы завершена успешно.")
+                logger.info("Фоновая очистка базы завершена успешно.")
             await asyncio.sleep(43200)
         except Exception as e:
-    logger.error(f"Ошибка фоновой очистки: {e}")
+            logger.error(f"Ошибка фоновой очистки: {e}")
             await asyncio.sleep(3600)
 
 # --- ПРИВЕТСТВИЕ ---
@@ -213,7 +213,7 @@ async def list_rides(m: types.Message, state: FSMContext):
         u_id_res = user_stmt.scalar()
         
         if not u_id_res:
-             return await m.answer("Сначала нажмите /start")
+            return await m.answer("Сначала нажмите /start")
 
         rides_stmt = await s.execute(select(Ride).where(Ride.user_id == u_id_res).order_by(Ride.ride_date.desc()))
         rides = rides_stmt.scalars().all()
@@ -254,6 +254,7 @@ async def ask_route(m: types.Message, state: FSMContext):
 )
 async def handle_ai_conversation(m: types.Message, state: FSMContext):
     logger.info(f"🎤 Received message from user {m.from_user.id}: {m.text[:50]}...")
+    
     # 1. Получаем текущие данные из состояния
     data = await state.get_data()
     role = data.get("role")
@@ -282,7 +283,7 @@ async def handle_ai_conversation(m: types.Message, state: FSMContext):
     if not role:
         role = "passenger"
         # Запишем в стейт, чтобы дальше не дергать БД
-        await state.update_data(role=role) 
+        await state.update_data(role=role)
 
     logger.info(f"👤 User role: {role}")
 
@@ -296,8 +297,8 @@ async def handle_ai_conversation(m: types.Message, state: FSMContext):
 
     is_ride_saved = False
     if res.get("origin") and res.get("destination") and res.get("date"):
-
-    logger.info(f"✅ Complete data received: origin={res.get('origin')}, dest={res.get('destination')}, date={res.get('date')}")
+        logger.info(f"✅ Complete data received: origin={res.get('origin')}, dest={res.get('destination')}, date={res.get('date')}")
+        
         # Если мы "угадали" роль из БД, надо обновить её в стейте перед сохранением,
         # так как process_ride_data берет роль из state
         await state.update_data(role=role)
@@ -305,13 +306,13 @@ async def handle_ai_conversation(m: types.Message, state: FSMContext):
         await process_ride_data(m, res, state)
         is_ride_saved = True
     else:
-    logger.warning(f"⚠️ Incomplete data: origin={res.get('origin')}, dest={res.get('destination')}, date={res.get('date')}")
+        logger.warning(f"⚠️ Incomplete data: origin={res.get('origin')}, dest={res.get('destination')}, date={res.get('date')}")
     
     # Фильтруем ответ от мусора
     ai_reply = res.get("raw_text", "")
     
-    # Удаляем любые блоки кода ``````
-    clean_reply = re.sub(r"``````", "", ai_reply, flags=re.DOTALL).strip()
+    # Удаляем любые блоки кода ```...```
+    clean_reply = re.sub(r"```.*?```", "", ai_reply, flags=re.DOTALL).strip()
     
     # На всякий случай удаляем остаточные JSON-подобные структуры, если они не были в блоке кода
     # (если ответ начинается с { и заканчивается }, считаем его техническим и скрываем)
@@ -332,13 +333,17 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
     async with async_session() as s:
         user_stmt = await s.execute(select(User).where(User.telegram_id == m.from_user.id))
         user = user_stmt.scalar()
-        if not user: return
+        if not user:
+            logger.error(f"❌ User not found for telegram_id={m.from_user.id}")
+            return
     
         parsed_date = parse_date(res['date'])
+        
+        logger.info(f"📅 Parsed date: res['date']={res.get('date')} -> parsed_date={parsed_date}")
+        
         if not parsed_date:
-            parsed_date = datetime.utcnow().date() + timedelta(days=1) 
-
-    logger.info(f"📅 Parsed date: res['date']={res.get('date')} -> parsed_date={parsed_date}")
+            parsed_date = datetime.utcnow().date() + timedelta(days=1)
+            logger.warning(f"⚠️ Date parsing failed, using tomorrow: {parsed_date}")
 
         seats = int(res.get('seats', 1 if role == 'passenger' else 3))
         
@@ -347,7 +352,7 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
         if not start_time or start_time == 'None' or start_time == '':
             start_time = "По договоренности"
 
-    logger.info(f"💾 Creating ride: origin={res.get('origin')}, dest={res.get('destination')}, date={parsed_date}, time={start_time}, seats={seats}, role={role}")
+        logger.info(f"💾 Creating ride: origin={res.get('origin')}, dest={res.get('destination')}, date={parsed_date}, time={start_time}, seats={seats}, role={role}")
 
         new_ride = Ride(
             user_id=user.id,
@@ -363,7 +368,7 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
         await s.commit()
         await s.refresh(new_ride)
 
-    logger.info(f"✅ Ride created: ID={new_ride.id}, ride_date={new_ride.ride_date}")
+        logger.info(f"✅ Ride created: ID={new_ride.id}, ride_date={new_ride.ride_date}")
 
         await m.answer(f"✅ Поездка сохранена!", reply_markup=main_kb())
 
@@ -372,12 +377,12 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
     elif role == 'passenger':
         await notify_drivers_about_passenger(m, new_ride, user)
 
-
     await state.clear()
 
 async def match_passengers(m: types.Message, new_ride: Ride, res: dict, user: User):
     target_date = parse_date(res['date'])
-    if not target_date: return
+    if not target_date:
+        return
 
     async with async_session() as s:
         matches_stmt = await s.execute(
@@ -405,8 +410,7 @@ async def match_passengers(m: types.Message, new_ride: Ride, res: dict, user: Us
                     try:
                         await m.bot.send_message(m.from_user.id, match_msg, reply_markup=kb.as_markup(), parse_mode="HTML")
                     except Exception as e:
-                        
-    logger.error(f"Ошибка уведомления водителю: {e}")
+                        logger.error(f"Ошибка уведомления водителю: {e}")
 
 async def notify_drivers_about_passenger(m: types.Message, passenger_ride: Ride, passenger_user: User):
     target_date = passenger_ride.ride_date
@@ -449,7 +453,7 @@ async def notify_drivers_about_passenger(m: types.Message, passenger_ride: Ride,
                     parse_mode="HTML"
                 )
             except Exception as e:
-    logger.error(f"Ошибка уведомления водителю: {e}")
+                logger.error(f"Ошибка уведомления водителю: {e}")
 
 # --- CALLBACKS ---
 @router.callback_query(F.data.startswith("take_"))
@@ -496,10 +500,10 @@ async def take_passenger(cb: types.CallbackQuery):
                 await cb.answer("Пассажир уведомлен!")
                 await cb.message.edit_text(cb.message.text + "\n\n📩 Уведомление отправлено пассажиру")
             except Exception as e:
-    logger.error(f"Ошибка уведомления пассажиру: {e}")
+                logger.error(f"Ошибка уведомления пассажиру: {e}")
                 await cb.answer("Ошибка отправки уведомления")
     except Exception as e:
-    logger.error(f"Error in take_passenger: {e}")
+        logger.error(f"Error in take_passenger: {e}")
         await cb.answer("Произошла ошибка")
 
 @router.callback_query(F.data.startswith("confirm_"))
@@ -515,7 +519,7 @@ async def confirm_booking(cb: types.CallbackQuery):
             
             driver_ride = await s.get(Ride, booking.driver_ride_id)
             if not driver_ride:
-                 return await cb.answer("Поездка водителя не найдена", show_alert=True)
+                return await cb.answer("Поездка водителя не найдена", show_alert=True)
 
             passenger_ride = await s.get(Ride, booking.passenger_ride_id)
             seats_needed = passenger_ride.initial_seats if passenger_ride else 1
@@ -546,7 +550,7 @@ async def confirm_booking(cb: types.CallbackQuery):
             await cb.answer("Поездка подтверждена!")
             await cb.message.edit_text(cb.message.text + "\n\n✅ Подтверждено")
     except Exception as e:
-    logger.error(f"Error in confirm_booking: {e}")
+        logger.error(f"Error in confirm_booking: {e}")
         await cb.answer("Ошибка подтверждения")
 
 
@@ -572,12 +576,5 @@ async def delete_ride(cb: types.CallbackQuery):
                 except:
                     pass
     except Exception as e:
-    logger.error(f"Error in delete_ride: {e}")
+        logger.error(f"Error in delete_ride: {e}")
         await cb.answer("Ошибка при удалении")
-
-
-
-
-
-
-
