@@ -14,7 +14,7 @@ class User(Base):
     
     # Relationships
     rides = relationship("Ride", back_populates="user")
-    bookings = relationship("Booking", back_populates="passenger")
+    # Убрали bookings - пассажир не нужен в User
     
     def __repr__(self):
         return f"User(id={self.id}, telegram_id={self.telegram_id}, username={self.username})"
@@ -25,7 +25,7 @@ class Ride(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    role = Column(String, nullable=False)
+    role = Column(String, nullable=False)  # driver или passenger
     origin = Column(String, nullable=False)
     destination = Column(String, nullable=False)
     ride_date = Column(Date, nullable=False)  # ← DATE вместо String
@@ -37,7 +37,8 @@ class Ride(Base):
     
     # Relationships
     user = relationship("User", back_populates="rides")
-    bookings = relationship("Booking", back_populates="ride")
+    driver_bookings = relationship("Booking", foreign_keys="[Booking.driver_ride_id]", back_populates="driver_ride")
+    passenger_bookings = relationship("Booking", foreign_keys="[Booking.passenger_ride_id]", back_populates="passenger_ride")
     
     def __repr__(self):
         return f"Ride(id={self.id}, role={self.role}, {self.origin}->{self.destination})"
@@ -49,12 +50,12 @@ class Booking(Base):
     id = Column(Integer, primary_key=True, index=True)
     driver_ride_id = Column(Integer, ForeignKey("rides.id"), nullable=False)
     passenger_ride_id = Column(Integer, ForeignKey("rides.id"), nullable=False)
-    status = Column(String, default='pending')
+    status = Column(String, default='pending')  # pending, confirmed, rejected
     created_at = Column(DateTime, default=datetime.now)
     
     # Relationships
-    ride = relationship("Ride", foreign_keys=[driver_ride_id], back_populates="bookings")
-    passenger = relationship("User", back_populates="bookings")
+    driver_ride = relationship("Ride", foreign_keys=[driver_ride_id], back_populates="driver_bookings")
+    passenger_ride = relationship("Ride", foreign_keys=[passenger_ride_id], back_populates="passenger_bookings")
     
     def __repr__(self):
         return f"Booking(id={self.id}, driver_ride_id={self.driver_ride_id}, status={self.status})"
