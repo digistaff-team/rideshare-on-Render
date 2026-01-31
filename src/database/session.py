@@ -9,16 +9,18 @@ Base = declarative_base()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
-    # Render использует postgres://, но asyncpg нужен postgresql+asyncpg://
+    # Render может давать postgresql:// или postgres://
+    # Для asyncpg нужен postgresql+asyncpg://
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif DATABASE_URL.startswith("postgresql://"):
+        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
     
     print(f"DEBUG: Connecting to DB with scheme: {DATABASE_URL.split(':')[0]}")
     engine = create_async_engine(DATABASE_URL, echo=False)
 else:
     # Fallback на SQLite для локальной разработки
     print("DEBUG: Using SQLite database")
-    from aiosqlite import connect
     DATABASE_URL = "sqlite+aiosqlite:///./test_bot.db"
     engine = create_async_engine(DATABASE_URL, echo=False)
 
