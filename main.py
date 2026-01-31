@@ -36,11 +36,11 @@ async def start_webserver():
 
 async def main():
     # ВРЕМЕННО: Пересоздать таблицы (закомментите # в начале строки после деплоя!)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    
-    logger.info("✅ Database tables recreated")
+    # async with engine.begin() as conn:
+        # await conn.run_sync(Base.metadata.drop_all)
+        # await conn.run_sync(Base.metadata.create_all)
+
+    await init_models()
     
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
