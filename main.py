@@ -2,7 +2,11 @@ import asyncio
 import logging
 import os
 import sys
-from aiohttp import web  # Добавляем импорт веб-сервера
+from dotenv import load_dotenv 
+
+load_dotenv() 
+
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
