@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Date, ForeignKey
+from sqlalchemy import Column, Integer, BigInteger, String, DateTime, Date, ForeignKey, func
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .session import Base
@@ -7,35 +7,37 @@ from .session import Base
 class User(Base):
     __tablename__ = "users"
     
-    id = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(BigInteger, unique=True, index=True, nullable=False)
-    username = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False)
+    username = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
-    # Relationships
-    rides = relationship("Ride", back_populates="user")
-    # Убрали bookings - пассажир не нужен в User
-    
+    # Связь с поездками
+    rides = relationship("Ride", back_populates="user", cascade="all, delete-orphan")
+
     def __repr__(self):
-        return f"User(id={self.id}, telegram_id={self.telegram_id}, username={self.username})"
+        return f"<User {self.telegram_id}>"
 
 
 class Ride(Base):
     __tablename__ = "rides"
     
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    role = Column(String, nullable=False)  # driver или passenger
-    origin = Column(String, nullable=False)
-    destination = Column(String, nullable=False)
-    ride_date = Column(Date, nullable=False)  # ← DATE вместо String
-    start_time = Column(String, nullable=True)
-    initial_seats = Column(Integer, nullable=True)
-    seats = Column(Integer, default=1)
-    raw_text = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.now)
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
     
-    # Relationships
+    # Данные маршрута
+    origin = Column(String(255), nullable=False, index=True)      # Откуда
+    destination = Column(String(255), nullable=False, index=True) # Куда
+    
+    # Время и дата
+    ride_date = Column(String(100), nullable=True, index=True)    # Поле для хранения даты (напр. "2025-12-27")
+    start_time = Column(String(100), nullable=True)   # Поле для хранения времени (напр. "10:00")
+    
+    initial_seats = Column(Integer, nullable=False)
+    seats = Column(Integer, nullable=False)
+    role = Column(String(50))                         # driver или passenger
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
     user = relationship("User", back_populates="rides")
     driver_bookings = relationship("Booking", foreign_keys="[Booking.driver_ride_id]", back_populates="driver_ride")
     passenger_bookings = relationship("Booking", foreign_keys="[Booking.passenger_ride_id]", back_populates="passenger_ride")
@@ -44,18 +46,15 @@ class Ride(Base):
         return f"Ride(id={self.id}, role={self.role}, {self.origin}->{self.destination})"
 
 
+    def __repr__(self):
+        return f"<Ride {self.origin} → {self.destination}>"
+
+
 class Booking(Base):
     __tablename__ = "bookings"
     
-    id = Column(Integer, primary_key=True, index=True)
-    driver_ride_id = Column(Integer, ForeignKey("rides.id"), nullable=False)
-    passenger_ride_id = Column(Integer, ForeignKey("rides.id"), nullable=False)
-    status = Column(String, default='pending')  # pending, confirmed, rejected
-    created_at = Column(DateTime, default=datetime.now)
-    
-    # Relationships
-    driver_ride = relationship("Ride", foreign_keys=[driver_ride_id], back_populates="driver_bookings")
-    passenger_ride = relationship("Ride", foreign_keys=[passenger_ride_id], back_populates="passenger_bookings")
-    
-    def __repr__(self):
-        return f"Booking(id={self.id}, driver_ride_id={self.driver_ride_id}, status={self.status})"
+    id = Column(Integer, primary_key=True)
+    driver_ride_id = Column(Integer, ForeignKey("rides.id"))
+    passenger_ride_id = Column(Integer, ForeignKey("rides.id"))
+    status = Column(String(50), default='pending')    # pending, confirmed, rejected
+    created_at = Column(DateTime, default=datetime.utcnow)

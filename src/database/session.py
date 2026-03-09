@@ -1,39 +1,37 @@
 import os
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import declarative_base
+import asyncio
+import logging
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
-# Создаём Base для моделей
-Base = declarative_base()
+logger = logging.getLogger(__name__)
 
-# Получаем DATABASE_URL из переменных окружения
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-if DATABASE_URL:
-    # Render может давать postgresql:// или postgres://
-    # Для asyncpg нужен postgresql+asyncpg://
-    if DATABASE_URL.startswith("postgres://"):
-        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif DATABASE_URL.startswith("postgresql://"):
-        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
-    
-    print(f"DEBUG: Connecting to DB with scheme: {DATABASE_URL.split(':')[0]}")
-    engine = create_async_engine(DATABASE_URL, echo=False)
-else:
-    # Fallback на SQLite для локальной разработки
-    print("DEBUG: Using SQLite database")
-    DATABASE_URL = "sqlite+aiosqlite:///./test_bot.db"
-    engine = create_async_engine(DATABASE_URL, echo=False)
+if not raw_url:
+    raise ValueError("DATABASE_URL is missing!")
 
-# Создаём фабрику сессий
+# ПРИНУДИТЕЛЬНАЯ ЗАМЕНА СХЕМЫ
+# Мы используем asyncpg, поэтому URL ОБЯЗАН начинаться с postgresql+asyncpg://
+# Даже если там было postgresql:// или postgres:// - мы это перепишем.
+
+# Разбираем URL (грубо), чтобы заменить только начало
+scheme, rest = raw_url.split("://", 1)
+DATABASE_URL = f"postgresql+asyncpg://{rest}"
+
+print(f"DEBUG: Connecting to DB with scheme: {DATABASE_URL.split('://')[0]}")
+
+# Создаем движок
+engine = create_async_engine(DATABASE_URL, echo=False)
+
 async_session = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False
+    engine, 
+    expire_on_commit=False, 
+    class_=AsyncSession
 )
 
-
 async def init_models():
-    """Создание таблиц в базе данных"""
+    from src.database.models import Base
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    print("✅ Database tables created/verified")
