@@ -295,12 +295,7 @@ async def ask_route(m: types.Message, state: FSMContext):
         "/") & ~F.text.in_({"📋 Мои поездки", "🔍 Найти поездку", "🙋 Подвези", "🚗 Подвезу"})
 )
 async def handle_ai_conversation(m: types.Message, state: FSMContext):
-    """
-    Главный обработчик диалога с пользователем.
-    Использует NLU (Pro-Talk) с fallback на простой парсер.
-    """
-
-    # 1. Получаем роль пользователя
+    # 1. Получаем текущие данные из состояния
     data = await state.get_data()
     role = data.get("role")
 
@@ -320,48 +315,36 @@ async def handle_ai_conversation(m: types.Message, state: FSMContext):
                 last_role = last_ride_res.scalar()
                 if last_role:
                     role = last_role
+    
+    # Если роль так и не нашли (новый юзер без кнопок), ставим passenger по умолчанию
+    if not role:
+        role = "passenger"
+        # Запишем в стейт, чтобы дальше не дергать БД
+        await state.update_data(role=role) 
 
-        if not role:
-            role = "passenger"
-
-        await state.update_data(role=role)
-
-    logger.info(
-        f"🔍 Обработка сообщения: user={m.from_user.id}, role={role}, text='{m.text}'")
-
-    # 3. Пробуем NLU (Pro-Talk)
+    # 3. Передаем роль в NLU
     res = await nlu.parse_intent(m.text, m.from_user.id, role=role)
+    
+    if not res:
+        return await m.answer("Извините, сервис временно недоступен.")
 
-    logger.info(f"📥 NLU вернул: {res}")
-
-    # 4. Если NLU не вернул полные данные - используем fallback парсер
-    has_complete_data = (
-        res and
-        res.get("origin") and
-        res.get("destination") and
-        res.get("date")
-    )
-
-    if not has_complete_data:
-        logger.info("⚠️ NLU не вернул полные данные, пробуем fallback parser")
-        fallback_res = fallback_parser.parse(m.text, role=role)
-
-        if fallback_res and fallback_res.get("origin") and fallback_res.get("destination"):
-            logger.info("✅ Fallback parser успешно извлёк данные")
-            res = fallback_res
-            has_complete_data = True
-
-    # 5. Если есть полные данные - сохраняем поездку
-    if has_complete_data:
+    is_ride_saved = False
+    if res.get("origin") and res.get("destination") and res.get("date"):
+        # Если мы "угадали" роль из БД, надо обновить её в стейте перед сохранением,
+        # так как process_ride_data берет роль из state
+        await state.update_data(role=role)
+        
         await process_ride_data(m, res, state)
-        return
-
-    # 6. Если данных нет, но есть текстовый ответ от AI - показываем его
-    ai_reply = res.get("raw_text", "") if res else ""
-
-    clean_reply = re.sub(r'```.*?```', '', ai_reply, flags=re.DOTALL).strip()
-    clean_reply = clean_reply.replace('```', '').strip()
-
+        is_ride_saved = True
+    
+    # Фильтруем ответ от мусора
+    ai_reply = res.get("raw_text", "")
+    
+    # Удаляем любые блоки кода ``````
+    clean_reply = re.sub(r"``````", "", ai_reply, flags=re.DOTALL).strip()
+    
+    # На всякий случай удаляем остаточные JSON-подобные структуры, если они не были в блоке кода
+    # (если ответ начинается с { и заканчивается }, считаем его техническим и скрываем)
     if clean_reply.strip().startswith("{") and clean_reply.strip().endswith("}"):
         clean_reply = ""
 
@@ -382,52 +365,23 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
 
     data = await state.get_data()
     role = data.get('role', 'passenger')
-
+    
     async with async_session() as s:
         user_stmt = await s.execute(select(User).where(User.telegram_id == m.from_user.id))
         user = user_stmt.scalar()
-
-        if not user:
-            logger.error(f"❌ Пользователь {m.from_user.id} не найден в БД")
-            return
-
-        # Парсим дату
-        if isinstance(res['date'], str):
-            parsed_date = parse_date(res['date'])
-        else:
-            parsed_date = res['date']
-
+        if not user: return
+    
+        parsed_date = parse_date(res['date'])
         if not parsed_date:
-            parsed_date = datetime.now().date() + timedelta(days=1)
-            logger.warning(f"⚠️ Не удалось распарсить дату '{res['date']}', используем завтра")
+            parsed_date = datetime.utcnow().date() + timedelta(days=1) 
 
-        # Количество мест
-        seats = res.get("seats")
-        if seats is None or seats == "null":
-            seats = extract_seats(m.text)
-        else:
-            seats = int(seats)
+        seats = int(res.get('seats', 1 if role == 'passenger' else 3))
         
-        # Валидируем количество мест
-        seats = validate_seats(seats, MIN_SEATS, MAX_SEATS)
-        
-        # Валидируем названия городов
-        if not validate_city_name(res['origin'], MAX_CITY_NAME_LENGTH):
-            logger.warning(f"⚠️ Некорректное название origin: {res['origin'][:50]}")
-        if not validate_city_name(res['destination'], MAX_CITY_NAME_LENGTH):
-            logger.warning(f"⚠️ Некорректное название destination: {res['destination'][:50]}")
+        # Если время не указано, ставим "По договоренности"
+        start_time = res.get('start_time')
+        if not start_time or start_time == 'None' or start_time == '':
+            start_time = "По договоренности"
 
-        # Время (пробуем оба варианта ключа для совместимости)
-        start_time = res.get("start_time") or res.get("starttime")
-        if start_time is None or start_time == "" or start_time == "None" or start_time == "null":
-            start_time = None
-
-        logger.info(
-            f"💾 Сохранение поездки: {res['origin']} → {res['destination']}, "
-            f"дата={parsed_date}, время={start_time or 'не указано'}, мест={seats}, роль={role}"
-        )
-
-        # Создаем объект Ride
         new_ride = Ride(
             user_id=user.id,
             origin=res['origin'][:MAX_CITY_NAME_LENGTH],
@@ -442,6 +396,8 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
         await s.commit()
         await s.refresh(new_ride)
 
+        logger.info(f"✅ Ride created: ID={new_ride.id}, ride_date={new_ride.ride_date}")
+
         logger.info(
             f"✅ Поездка сохранена: ID={new_ride.id}, user={m.from_user.id}, "
             f"role={role}, origin={res['origin']}, destination={res['destination']}, "
@@ -455,7 +411,8 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
         elif role == 'passenger':
             await notify_drivers_about_passenger(m, new_ride, user)
 
-        await state.clear()
+
+    await state.clear()
 
 
 async def match_passengers(m: types.Message, new_ride: Ride, res: dict, user: User):
