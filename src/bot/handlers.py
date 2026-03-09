@@ -1,7 +1,5 @@
 import asyncio
 import logging
-import json
-import re
 import html
 from datetime import datetime, timedelta, date
 from sqlalchemy import delete, select, update
@@ -16,6 +14,17 @@ from src.database.session import async_session
 from src.database.models import User, Ride, Booking
 from src.services.nlu import NLUProcessor
 from src.services.simple_parser import SimpleParser
+from src.config import (
+    ROUTE_ORDER,
+    CLEANUP_INTERVAL_SECONDS,
+    CLEANUP_DAYS_BACK,
+    MAX_RIDES_TO_FETCH,
+    MAX_RIDES_TO_DISPLAY,
+    MAX_CITY_NAME_LENGTH,
+    MIN_SEATS,
+    MAX_SEATS,
+)
+from src.utils import extract_seats, validate_city_name, validate_seats
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -27,7 +36,8 @@ class RideForm(StatesGroup):
     chatting_with_ai = State()
 
 
-def main_kb():
+def main_kb() -> ReplyKeyboardMarkup:
+    """Возвращает основную клавиатуру бота."""
     kb = [
         [KeyboardButton(text="🙋 Подвези"), KeyboardButton(text="🚗 Подвезу")],
         [KeyboardButton(text="🔍 Найти поездку"),
@@ -36,21 +46,16 @@ def main_kb():
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
-# --- НАСТРОЙКА МАРШРУТОВ ---
-ROUTE_ORDER = [
-    "Сказочный край",
-    "Живой дом",
-    "Здравое",
-    "Григорьевская",
-    "Смоленская",
-    "Афипский",
-    "Энем",
-    "Яблоновский",
-    "Краснодар"
-]
-
-
 def get_city_index(city_name: str) -> int:
+    """
+    Возвращает индекс города в маршруте.
+    
+    Args:
+        city_name: Название города
+        
+    Returns:
+        Индекс города или -1 если не найден
+    """
     city_name = city_name.lower()
     for i, stop in enumerate(ROUTE_ORDER):
         if stop.lower() in city_name:
@@ -94,7 +99,15 @@ def parse_date(date_str: str):
 
 
 def fmt_date(d) -> str:
-    """Вспомогательная функция для форматирования даты в DD.MM.YYYY"""
+    """
+    Вспомогательная функция для форматирования даты в DD.MM.YYYY.
+    
+    Args:
+        d: Дата (date объект или строка)
+        
+    Returns:
+        Отформатированная строка даты
+    """
     if not d:
         return ""
 
@@ -111,48 +124,17 @@ def fmt_date(d) -> str:
 
     return str(d)
 
-def extract_seats(text: str, role: str) -> int:
-    """Извлекает количество мест из текста"""
-    import re
-    
-    numbers_map = {
-        "одно": 1, "один": 1, "одна": 1,
-        "два": 2, "две": 2,
-        "три": 3, "четыре": 4,
-        "пять": 5,
-    }
-    
-    patterns = [
-        (r"(\d+)\s*мест", "digit"),
-        (r"есть\s+(\d+)", "digit"),
-        (r"(одно|один|два|две|три|четыре|пять)\s*мест", "word"),
-        (r"есть\s+(одно|один|два|две|три|четыре|пять)", "word"),
-    ]
-    
-    for pattern, match_type in patterns:
-        match = re.search(pattern, text.lower())
-        if match:
-            num_str = match.group(1)
-            
-            if match_type == "digit" and num_str.isdigit():
-                return int(num_str)
-            
-            elif match_type == "word" and num_str in numbers_map:
-                return numbers_map[num_str]
-    
-    if re.search(r"есть\s+место|одно\s+место", text.lower()):
-        return 1
-    
-    return 1
-
 
 # --- ФОНОВЫЕ ЗАДАЧИ ---
 async def auto_clean_old_rides():
-    """Фоновая задача для удаления старых записей"""
+    """
+    Фоновая задача для удаления старых записей.
+    Работает до отмены через asyncio.CancelledError.
+    """
     while True:
         try:
             async with async_session() as session:
-                cutoff = datetime.now().date() - timedelta(days=2)
+                cutoff = datetime.now().date() - timedelta(days=CLEANUP_DAYS_BACK)
 
                 result = await session.execute(
                     delete(Ride).where(Ride.date < cutoff)
@@ -160,14 +142,17 @@ async def auto_clean_old_rides():
                 await session.commit()
                 deleted = result.rowcount
                 if deleted > 0:
-                    logger.info(f"Удалено {deleted} старых поездок")
+                    logger.info(f"🧹 Удалено {deleted} старых поездок")
                 else:
-                    logger.info("Фоновая очистка базы завершена успешно.")
+                    logger.debug("Фоновая очистка: нет старых поездок")
+        except asyncio.CancelledError:
+            logger.info("Фоновая задача очистки остановлена")
+            raise
         except Exception as e:
             if "no such table" not in str(e):
-                logger.error(f"Ошибка фоновой очистки: {e}")
+                logger.error(f"Ошибка фоновой очистки: {e}", exc_info=True)
 
-        await asyncio.sleep(3600)
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
 
 
 # --- ПРИВЕТСТВИЕ ---
@@ -211,7 +196,7 @@ async def find_rides(m: types.Message, state: FSMContext):
                 Ride.role == 'driver',
                 Ride.seats > 0,
                 Ride.date >= today
-            ).order_by(Ride.date.asc(), Ride.created_at.desc()).limit(20)
+            ).order_by(Ride.date.asc(), Ride.created_at.desc()).limit(MAX_RIDES_TO_FETCH)
         )
 
         all_rides = rides_stmt.all()
@@ -233,7 +218,7 @@ async def find_rides(m: types.Message, state: FSMContext):
                     except ValueError:
                         rides.append((r, u))
 
-            if len(rides) >= 10:
+            if len(rides) >= MAX_RIDES_TO_DISPLAY:
                 break
 
         if not rides:
@@ -394,52 +379,61 @@ async def handle_ai_conversation(m: types.Message, state: FSMContext):
 
 async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
     """Сохранение данных поездки в БД"""
-    
+
     data = await state.get_data()
     role = data.get('role', 'passenger')
-    
+
     async with async_session() as s:
         user_stmt = await s.execute(select(User).where(User.telegram_id == m.from_user.id))
         user = user_stmt.scalar()
-        
+
         if not user:
             logger.error(f"❌ Пользователь {m.from_user.id} не найден в БД")
             return
-        
+
         # Парсим дату
         if isinstance(res['date'], str):
             parsed_date = parse_date(res['date'])
         else:
             parsed_date = res['date']
-        
+
         if not parsed_date:
             parsed_date = datetime.now().date() + timedelta(days=1)
             logger.warning(f"⚠️ Не удалось распарсить дату '{res['date']}', используем завтра")
-        
+
         # Количество мест
         seats = res.get("seats")
         if seats is None or seats == "null":
-            seats = extract_seats(m.text, role)
+            seats = extract_seats(m.text)
         else:
             seats = int(seats)
         
+        # Валидируем количество мест
+        seats = validate_seats(seats, MIN_SEATS, MAX_SEATS)
+        
+        # Валидируем названия городов
+        if not validate_city_name(res['origin'], MAX_CITY_NAME_LENGTH):
+            logger.warning(f"⚠️ Некорректное название origin: {res['origin'][:50]}")
+        if not validate_city_name(res['destination'], MAX_CITY_NAME_LENGTH):
+            logger.warning(f"⚠️ Некорректное название destination: {res['destination'][:50]}")
+
         # Время (пробуем оба варианта ключа для совместимости)
         start_time = res.get("start_time") or res.get("starttime")
         if start_time is None or start_time == "" or start_time == "None" or start_time == "null":
             start_time = None
-        
+
         logger.info(
             f"💾 Сохранение поездки: {res['origin']} → {res['destination']}, "
             f"дата={parsed_date}, время={start_time or 'не указано'}, мест={seats}, роль={role}"
         )
-        
+
         # Создаем объект Ride
         new_ride = Ride(
             user_id=user.id,
-            origin=res['origin'],
-            destination=res['destination'],
+            origin=res['origin'][:MAX_CITY_NAME_LENGTH],
+            destination=res['destination'][:MAX_CITY_NAME_LENGTH],
             date=parsed_date,
-            start_time=start_time,  # ← ИСПРАВЛЕНО!
+            start_time=start_time,
             seats=seats,
             role=role
         )
@@ -447,16 +441,20 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
         s.add(new_ride)
         await s.commit()
         await s.refresh(new_ride)
-        
-        logger.info(f"✅ Поездка сохранена с ID={new_ride.id}")
-        
+
+        logger.info(
+            f"✅ Поездка сохранена: ID={new_ride.id}, user={m.from_user.id}, "
+            f"role={role}, origin={res['origin']}, destination={res['destination']}, "
+            f"date={parsed_date}, seats={seats}"
+        )
+
         await m.answer("✅ Поездка сохранена!", reply_markup=main_kb())
-        
+
         if role == 'driver':
             await match_passengers(m, new_ride, res, user)
         elif role == 'passenger':
             await notify_drivers_about_passenger(m, new_ride, user)
-        
+
         await state.clear()
 
 
@@ -633,7 +631,13 @@ async def confirm_booking(cb: types.CallbackQuery):
                 return await cb.answer("Поездка водителя не найдена", show_alert=True)
 
             passenger_ride = await s.get(Ride, booking.passenger_ride_id)
-            seats_needed = passenger_ride.seats if passenger_ride else 1
+            
+            if not passenger_ride:
+                booking.status = 'rejected'
+                await s.commit()
+                return await cb.answer("Поездка пассажира не найдена", show_alert=True)
+            
+            seats_needed = passenger_ride.seats if passenger_ride.seats else 1
 
             if driver_ride.seats < seats_needed:
                 booking.status = 'rejected'
@@ -642,7 +646,7 @@ async def confirm_booking(cb: types.CallbackQuery):
                 await cb.message.edit_text(cb.message.text + "\n\n❌ Недостаточно мест")
                 return
 
-            if passenger_ride and driver_ride.start_time != "По договоренности":
+            if driver_ride.start_time != "По договоренности":
                 passenger_ride.start_time = driver_ride.start_time
 
             booking.status = 'confirmed'
@@ -682,9 +686,11 @@ async def delete_ride(cb: types.CallbackQuery):
                 await s.execute(delete(Booking).where(Booking.passenger_ride_id == r_id))
                 await s.delete(ride)
                 await s.commit()
+                logger.info(f"🗑️ Поездка удалена: ID={r_id}, user={cb.from_user.id}")
                 await cb.answer("Поездка удалена")
                 await cb.message.delete()
             else:
+                logger.warning(f"⚠️ Попытка удалить несуществующую поездку: ID={r_id}, user={cb.from_user.id}")
                 await cb.answer("Поездка уже удалена", show_alert=True)
                 try:
                     await cb.message.delete()

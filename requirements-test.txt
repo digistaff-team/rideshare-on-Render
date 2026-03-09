@@ -1,0 +1,16 @@
+# Production dependencies
+aiogram==3.4.1
+aiohttp==3.9.1
+sqlalchemy==2.0.25
+python-dotenv==1.0.0
+asyncpg==0.29.0
+aiosqlite==0.19.0
+redis==5.0.1
+
+# Testing dependencies
+pytest==7.4.3
+pytest-asyncio==0.21.2
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+httpx==0.25.2
+aresponses==2.1.6
