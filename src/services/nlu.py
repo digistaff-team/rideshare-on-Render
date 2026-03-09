@@ -68,7 +68,7 @@ class NLUProcessor:
         """
         if not self.api_token or not self.bot_id:
             logger.error("❌ PROTALK_TOKEN or PROTALK_BOT_ID missing in .env")
-            return {}
+            return {"raw_text": "⚠️ Сервис временно недоступен. Попробуйте позже."}
 
         # Формируем системный промпт
         current_date = datetime.now().strftime("%d.%m.%Y")
@@ -85,11 +85,19 @@ class NLUProcessor:
         full_message = f"{system_instruction}\n{context_prefix}\nСообщение пользователя: {text}"
 
         url = f"{self.base_url}/{self.api_token}"
+        
+        # Валидируем bot_id перед использованием
+        try:
+            bot_id_int = int(self.bot_id)
+        except (ValueError, TypeError):
+            logger.error("❌ Invalid PROTALK_BOT_ID: must be an integer")
+            return {"raw_text": "⚠️ Ошибка конфигурации бота. Обратитесь к администратору."}
+        
         payload = {
-            "bot_id": int(self.bot_id),
+            "bot_id": bot_id_int,
             "chat_id": str(user_id),
             "message": full_message
-        }  # ← ИСПРАВЛЕНО: добавлена закрывающая скобка
+        }
 
         try:
             # Добавлен timeout
@@ -131,21 +139,44 @@ class NLUProcessor:
             clean_text = clean_text.replace("```", "").strip()
             clean_text = re.sub(r"^\s*json\s*", "", clean_text, flags=re.MULTILINE).strip()
 
-            # Конвертируем дату из DD.MM.YYYY в YYYY-MM-DD для БД
+            # Конвертируем дату в YYYY-MM-DD для БД (поддержка разных форматов)
             if result_data and "date" in result_data:
-                try:
-                    date_obj = datetime.strptime(result_data["date"], "%d.%m.%Y")
-                    result_data["date"] = date_obj.strftime("%Y-%m-%d")
-                except ValueError:
-                    logger.warning(f"⚠️ Неверный формат даты: {result_data.get('date')}")
+                result_data["date"] = self._normalize_date(result_data["date"])
 
             # Возвращаем результат
             if result_data:
                 result_data["raw_text"] = clean_text
                 return result_data
-            
+
             return {"raw_text": clean_text}
 
         except Exception as e:
             logger.error(f"❌ Exception in parse_intent: {e}")
             return {}
+
+    def _normalize_date(self, date_str: str) -> str:
+        """
+        Конвертирует дату в формат YYYY-MM-DD.
+        Поддерживает форматы: DD.MM.YYYY, DD/MM/YYYY, YYYY-MM-DD, YYYY/MM/DD
+        """
+        if not date_str:
+            return date_str
+
+        # Пробуем разные форматы
+        formats = [
+            ("%d.%m.%Y", "DD.MM.YYYY"),
+            ("%d/%m/%Y", "DD/MM/YYYY"),
+            ("%Y-%m-%d", "YYYY-MM-DD"),
+            ("%Y/%m/%d", "YYYY/MM/DD"),
+        ]
+
+        for fmt, fmt_name in formats:
+            try:
+                date_obj = datetime.strptime(date_str, fmt)
+                return date_obj.strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+
+        # Если ни один формат не подошел, логируем и возвращаем как есть
+        logger.warning(f"⚠️ Неверный формат даты: {date_str}")
+        return date_str
