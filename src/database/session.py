@@ -1,4 +1,5 @@
 import os
+import ssl
 import asyncio
 import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -52,6 +53,9 @@ def create_engine_with_retry(max_retries: int = 5):
                 )
                 logger.info("Database engine created (SQLite)")
             else:
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
                 eng = create_async_engine(
                     DATABASE_URL,
                     echo=False,
@@ -61,7 +65,7 @@ def create_engine_with_retry(max_retries: int = 5):
                     max_overflow=MAX_OVERFLOW,
                     pool_timeout=POOL_TIMEOUT,
                     pool_recycle=POOL_RECYCLE,
-                    connect_args={"ssl": True},
+                    connect_args={"ssl": ssl_ctx},
                 )
                 logger.info(f"Database engine created (pool_size={POOL_SIZE}, max_overflow={MAX_OVERFLOW})")
             return eng
