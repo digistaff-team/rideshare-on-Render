@@ -556,8 +556,12 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
     async with async_session() as s:
         user_stmt = await s.execute(select(User).where(User.telegram_id == m.from_user.id))
         user = user_stmt.scalar()
-        if not user: return
-    
+        if not user:
+            user = User(telegram_id=m.from_user.id, username=m.from_user.username)
+            s.add(user)
+            await s.commit()
+            await s.refresh(user)
+
         parsed_date = parse_date(res['date'])
         if not parsed_date:
             parsed_date = datetime.utcnow().date() + timedelta(days=1) 
