@@ -4,7 +4,8 @@
 import asyncio
 import pytest
 import pytest_asyncio
-from unittest.mock import AsyncMock, MagicMock
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -74,6 +75,7 @@ async def driver_ride(db_session, user):
         date=date.today() + timedelta(days=1),
         start_time="10:00",
         seats=3,
+        initial_seats=3,
     )
     db_session.add(ride)
     await db_session.commit()
@@ -93,6 +95,7 @@ async def passenger_ride(db_session, user):
         date=date.today() + timedelta(days=1),
         start_time=None,
         seats=1,
+        initial_seats=1,
     )
     db_session.add(ride)
     await db_session.commit()
@@ -151,3 +154,14 @@ def mock_state():
 def route_order():
     """Возвращает список маршрутов."""
     return ROUTE_ORDER
+
+
+@pytest_asyncio.fixture
+async def patch_delivery_session(db_session):
+    """Патчит async_session в delivery_matching для использования тестовой БД."""
+    @asynccontextmanager
+    async def mock_session_factory():
+        yield db_session
+
+    with patch("src.services.delivery_matching.async_session", mock_session_factory):
+        yield

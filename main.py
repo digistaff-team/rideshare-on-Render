@@ -6,10 +6,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Принудительно UTF-8 для вывода логов (Windows CP1251 не поддерживает emoji)
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr.encoding and sys.stderr.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.storage.redis import RedisStorage
+
+# Redis storage (опционально)
+try:
+    from aiogram.fsm.storage.redis import RedisStorage
+    REDIS_AVAILABLE = True
+except ImportError:
+    RedisStorage = None
+    REDIS_AVAILABLE = False
+
 from sqlalchemy import select
 
 # Импорты ваших модулей (убедитесь, что пути правильные)
@@ -63,25 +77,30 @@ async def main():
     
     # 3. Настраиваем хранилище FSM (Redis или Memory)
     redis_url = os.getenv("REDIS_URL")
-    if redis_url:
+    if redis_url and REDIS_AVAILABLE:
         # Для продакшена используем Redis
         storage = RedisStorage.from_url(redis_url)
         logger.info(f"💾 Using Redis storage for FSM states")
     else:
         # Для локальной разработки
         storage = MemoryStorage()
-        logger.info("💾 Using Memory storage for FSM states (development)")
+        if not REDIS_AVAILABLE:
+            logger.info("💾 Redis package not installed, using Memory storage")
+        else:
+            logger.info("💾 Using Memory storage for FSM states (development)")
     
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
 
-    # 3. Запускаем веб-сервер (ВАЖНО: перед поллингом)
-    await start_web_server()
+    # 4. Запускаем веб-сервер
+    runner = await start_webserver()
 
-    # 4. Фоновая задача очистки
-    asyncio.create_task(auto_clean_old_rides())
+    # 5. Создаём фоновую задачу очистки
+    cleanup_task = asyncio.create_task(auto_clean_old_rides())
+    background_tasks.add(cleanup_task)
+    cleanup_task.add_done_callback(background_tasks.discard)
 
-    # 5. Удаляем вебхук и запускаем поллинг
+    # 6. Удаляем вебхук и запускаем поллинг
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("🚀 Bot started polling")
 

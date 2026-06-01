@@ -73,22 +73,22 @@ class TestSimpleParserTime:
     def test_parse_time_format_hhmm(self):
         result = self.parser.parse("в 10:00")
         assert result is not None
-        assert result["starttime"] == "10:00"
+        assert result["start_time"] == "10:00"
 
     def test_parse_time_morning(self):
         result = self.parser.parse("в 9 утра")
         assert result is not None
-        assert result["starttime"] == "09:00"
+        assert result["start_time"] == "09:00"
 
     def test_parse_time_evening(self):
         result = self.parser.parse("в 9 вечера")
         assert result is not None
-        assert result["starttime"] == "21:00"
+        assert result["start_time"] == "21:00"
 
     def test_parse_time_hours_format(self):
         result = self.parser.parse("в 14 часов")
         assert result is not None
-        assert result["starttime"] == "14:00"
+        assert result["start_time"] == "14:00"
 
 
 class TestSimpleParserSeats:
@@ -133,7 +133,7 @@ class TestSimpleParserFull:
         assert result["origin"] == "Краснодар"
         assert result["destination"] == "Сказочный край"
         assert "date" in result
-        assert result["starttime"] == "10:00"
+        assert result["start_time"] == "10:00"
         assert result["seats"] == 2
 
     def test_parse_full_message_passenger(self):
@@ -145,5 +145,5 @@ class TestSimpleParserFull:
         assert result["origin"] == "Здравое"
         assert result["destination"] == "Краснодар"
         assert "date" in result
-        assert result["starttime"] == "18:00"
+        assert result["start_time"] == "18:00"
         assert result["seats"] == 1

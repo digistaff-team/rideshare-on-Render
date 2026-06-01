@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import html
+import re
 from datetime import datetime, timedelta, date
 from sqlalchemy import delete, select, update
 from aiogram import Router, types, F
@@ -11,54 +12,143 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from src.database.session import async_session
-from src.database.models import User, Ride, Booking
-from src.services.nlu import NLUProcessor
+from src.database.models import User, Ride, Booking, DeliveryRequest, DeliveryOffer, DeliveryMatch
 from src.services.simple_parser import SimpleParser
+from src.services.delivery_matching import run_matching_for_request, run_matching_for_offer
 from src.config import (
     ROUTE_ORDER,
+    POPULAR_STORES,
     CLEANUP_INTERVAL_SECONDS,
     CLEANUP_DAYS_BACK,
+    DELIVERY_CLEANUP_DAYS,
     MAX_RIDES_TO_FETCH,
     MAX_RIDES_TO_DISPLAY,
     MAX_CITY_NAME_LENGTH,
+    MAX_STORE_NAME_LENGTH,
+    MAX_REQUEST_TEXT_LENGTH,
     MIN_SEATS,
     MAX_SEATS,
+    MIN_CAPACITY,
+    MAX_CAPACITY,
 )
 from src.utils import extract_seats, validate_city_name, validate_seats
 
 logger = logging.getLogger(__name__)
 router = Router()
-nlu = NLUProcessor()
-fallback_parser = SimpleParser()
+parser = SimpleParser()
 
+
+# ============================================================
+# FSM STATES
+# ============================================================
 
 class RideForm(StatesGroup):
-    chatting_with_ai = State()
+    waiting_for_input = State()
+    waiting_for_origin = State()
+    waiting_for_destination = State()
+    waiting_for_date = State()
+    waiting_for_confirmation = State()
 
+
+class DeliveryRequestForm(StatesGroup):
+    waiting_for_text = State()
+    waiting_for_confirmation = State()
+
+
+class DeliveryOfferForm(StatesGroup):
+    waiting_for_text = State()
+    waiting_for_confirmation = State()
+
+
+# ============================================================
+# KEYBOARDS
+# ============================================================
 
 def main_kb() -> ReplyKeyboardMarkup:
     """Возвращает основную клавиатуру бота."""
     kb = [
         [KeyboardButton(text="🙋 Подвези"), KeyboardButton(text="🚗 Подвезу")],
-        [KeyboardButton(text="🔍 Найти поездку"),
-         KeyboardButton(text="📋 Мои поездки")]
+        [KeyboardButton(text="🔍 Найти поездку"), KeyboardButton(text="📋 Мои поездки")],
+        [KeyboardButton(text="🛍 Привези"), KeyboardButton(text="🛒 Привезу")],
+        [KeyboardButton(text="📦 Мои доставки")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
+def delivery_cancel_kb() -> ReplyKeyboardMarkup:
+    """Клавиатура отмены для доставки."""
+    kb = [[KeyboardButton(text="❌ Отменить")]]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+
+def delivery_confirm_kb() -> ReplyKeyboardMarkup:
+    """Клавиатура подтверждения для доставки."""
+    kb = [
+        [KeyboardButton(text="✅ Подтвердить")],
+        [KeyboardButton(text="❌ Отменить")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+
+def city_kb() -> ReplyKeyboardMarkup:
+    """Клавиатура выбора города из маршрута."""
+    rows = []
+    row = []
+    for i, city in enumerate(ROUTE_ORDER):
+        row.append(KeyboardButton(text=city))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([KeyboardButton(text="❌ Отменить")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def date_kb() -> ReplyKeyboardMarkup:
+    """Клавиатура выбора даты (сегодня/завтра/послезавтра)."""
+    today = datetime.now().date()
+    rows = [
+        [
+            KeyboardButton(text=f"Сегодня ({today.strftime('%d.%m')})"),
+            KeyboardButton(text=f"Завтра ({(today + timedelta(days=1)).strftime('%d.%m')})"),
+        ],
+        [KeyboardButton(text=f"Послезавтра ({(today + timedelta(days=2)).strftime('%d.%m')})")],
+        [KeyboardButton(text="❌ Отменить")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def ride_confirm_kb() -> ReplyKeyboardMarkup:
+    """Клавиатура подтверждения поездки."""
+    kb = [
+        [KeyboardButton(text="✅ Подтвердить")],
+        [KeyboardButton(text="❌ Отменить")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+
+def _parse_city_from_text(text: str) -> str | None:
+    """Распознаёт город по нажатию кнопки или свободному вводу."""
+    text_clean = text.strip()
+    if not text_clean:
+        return None
+    text_lower = text_clean.lower()
+    for city in ROUTE_ORDER:
+        city_lower = city.lower()
+        if city_lower in text_lower or text_lower in city_lower:
+            return city
+    return None
+
+
 def get_city_index(city_name: str) -> int:
-    """
-    Возвращает индекс города в маршруте.
-    
-    Args:
-        city_name: Название города
-        
-    Returns:
-        Индекс города или -1 если не найден
-    """
-    city_name = city_name.lower()
+    """Возвращает индекс города в маршруте или -1 если не найден."""
+    city_name = city_name.lower().strip()
+    if not city_name:
+        return -1
     for i, stop in enumerate(ROUTE_ORDER):
-        if stop.lower() in city_name:
+        stop_lower = stop.lower()
+        if stop_lower in city_name or city_name in stop_lower:
             return i
     return -1
 
@@ -167,15 +257,16 @@ async def start(m: types.Message, state: FSMContext):
             await session.commit()
 
     welcome_text = (
-        "Привет! Я помогу найти попутчиков.\n\n"
-        "Используйте кнопки внизу экрана.\n\n"
-        "Чтобы создать запись о поездке:\n"
-        "Вы пассажир - нажмите 🙋 Подвези\n"
-        "Вы водитель - нажмите 🚗 Подвезу\n\n"
-        "Посмотреть все активные поездки:\n"
-        "Нажмите 🔍 Найти поездку\n\n"
-        "Проверить/удалить свои поездки:\n"
-        "Нажмите кнопку 📋 Мои поездки"
+        "Привет! Я помогу найти попутчиков и заказать доставку продуктов.\n\n"
+        "<b>Поездки:</b>\n"
+        "🙋 Подвези — найти водителя\n"
+        "🚗 Подвезу — найти пассажиров\n"
+        "🔍 Найти поездку — все доступные поездки\n"
+        "📋 Мои поездки — управление поездками\n\n"
+        "<b>Доставка:</b>\n"
+        "🛍 Привези — заказать доставку из магазина\n"
+        "🛒 Привезу — предложить доставку из магазина\n"
+        "📦 Мои доставки — управление заявками"
     )
     await m.answer(welcome_text, reply_markup=main_kb(), parse_mode="HTML")
 
@@ -273,91 +364,187 @@ async def list_rides(m: types.Message, state: FSMContext):
 
 
 # --- ВЫБОР РОЛИ ---
+_RIDE_MAIN_BUTTONS = {
+    "📋 Мои поездки", "🔍 Найти поездку", "🙋 Подвези", "🚗 Подвезу",
+    "🛍 Привези", "🛒 Привезу", "📦 Мои доставки",
+}
+
 @router.message(F.text.in_(["🙋 Подвези", "🚗 Подвезу"]))
 async def ask_route(m: types.Message, state: FSMContext):
     await state.clear()
     role = "passenger" if "🙋" in m.text else "driver"
     await state.update_data(role=role)
-    await state.set_state(RideForm.chatting_with_ai)
+    await state.set_state(RideForm.waiting_for_input)
+
+    cancel_kb = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="❌ Отменить")]],
+        resize_keyboard=True,
+    )
+    text = (
+        "Напишите маршрут одним сообщением, например:\n"
+        "«Из Краснодара в Сказочный завтра в 9 утра»\n\n"
+        "Или я спрошу пошагово."
+        if role == "passenger" else
+        "Напишите маршрут одним сообщением, например:\n"
+        "«Из Сказочного в Краснодар завтра в 9 утра, 2 места»\n\n"
+        "Или я спрошу пошагово."
+    )
+    await m.answer(text, reply_markup=cancel_kb)
+
+
+# --- ШАГ 1: первое сообщение — пробуем распарсить всё сразу ---
+@router.message(
+    RideForm.waiting_for_input,
+    F.text & ~F.text.startswith("/") & ~F.text.in_(_RIDE_MAIN_BUTTONS | {"❌ Отменить"}),
+)
+async def handle_ride_input(m: types.Message, state: FSMContext):
+    parsed = parser.parse(m.text)
+    if parsed:
+        updates = {k: v for k, v in parsed.items() if v is not None}
+        if updates:
+            await state.update_data(**updates)
+    await _proceed_to_next_field(m, state)
+
+
+async def _proceed_to_next_field(m: types.Message, state: FSMContext):
+    """Переходит к следующему недостающему полю или к экрану подтверждения."""
+    data = await state.get_data()
+
+    if not data.get("origin"):
+        await state.set_state(RideForm.waiting_for_origin)
+        await m.answer("📍 <b>Откуда едете?</b>", reply_markup=city_kb(), parse_mode="HTML")
+        return
+
+    if not data.get("destination"):
+        await state.set_state(RideForm.waiting_for_destination)
+        await m.answer("📍 <b>Куда едете?</b>", reply_markup=city_kb(), parse_mode="HTML")
+        return
+
+    if not data.get("date"):
+        await state.set_state(RideForm.waiting_for_date)
+        await m.answer("📅 <b>Когда?</b>", reply_markup=date_kb(), parse_mode="HTML")
+        return
+
+    await _show_ride_confirmation(m, state)
+
+
+# --- ШАГ 2a: ввод города отправления ---
+@router.message(
+    RideForm.waiting_for_origin,
+    F.text & ~F.text.startswith("/") & ~F.text.in_({"❌ Отменить"}),
+)
+async def handle_ride_origin(m: types.Message, state: FSMContext):
+    city = _parse_city_from_text(m.text)
+    if not city:
+        await m.answer(
+            "❓ Не распознан город. Выберите из списка или напишите название.",
+            reply_markup=city_kb(),
+        )
+        return
+    await state.update_data(origin=city)
+    await _proceed_to_next_field(m, state)
+
+
+# --- ШАГ 2b: ввод города назначения ---
+@router.message(
+    RideForm.waiting_for_destination,
+    F.text & ~F.text.startswith("/") & ~F.text.in_({"❌ Отменить"}),
+)
+async def handle_ride_destination(m: types.Message, state: FSMContext):
+    city = _parse_city_from_text(m.text)
+    if not city:
+        await m.answer(
+            "❓ Не распознан город. Выберите из списка или напишите название.",
+            reply_markup=city_kb(),
+        )
+        return
+    await state.update_data(destination=city)
+    await _proceed_to_next_field(m, state)
+
+
+# --- ШАГ 2c: ввод даты ---
+@router.message(
+    RideForm.waiting_for_date,
+    F.text & ~F.text.startswith("/") & ~F.text.in_({"❌ Отменить"}),
+)
+async def handle_ride_date(m: types.Message, state: FSMContext):
+    text_lower = m.text.lower()
+    today = datetime.now().date()
+
+    if text_lower.startswith("послезавтра"):
+        parsed_date = today + timedelta(days=2)
+    elif text_lower.startswith("завтра"):
+        parsed_date = today + timedelta(days=1)
+    elif text_lower.startswith("сегодня"):
+        parsed_date = today
+    else:
+        parsed_date = parse_date(m.text)
+
+    if not parsed_date:
+        await m.answer(
+            "❓ Не понял дату. Выберите кнопку или напишите, например: 15.06.2026",
+            reply_markup=date_kb(),
+        )
+        return
+
+    await state.update_data(date=parsed_date.strftime("%Y-%m-%d"))
+    await _proceed_to_next_field(m, state)
+
+
+async def _show_ride_confirmation(m: types.Message, state: FSMContext):
+    """Показывает итоговый экран перед сохранением поездки."""
+    data = await state.get_data()
+    role = data.get("role", "passenger")
+    origin = data.get("origin", "—")
+    destination = data.get("destination", "—")
+    ride_date = data.get("date")
+    time = data.get("start_time") or "По договоренности"
+    seats = data.get("seats", 1 if role == "passenger" else 3)
+
+    role_label = "🙋 Пассажир" if role == "passenger" else "🚗 Водитель"
+    date_display = fmt_date(ride_date) if ride_date else "—"
 
     text = (
-        "Напишите о желаемой поездке, например: 'Из Краснодара в Сказочный сегодня в 18:00, одно место'."
-        if role == "passenger" else
-        "Напишите маршрут, дату и время вашей поездки, например: 'Из Сказочного края в Краснодар завтра в 9 утра, есть два места'."
+        f"<b>Подтвердите поездку</b>\n\n"
+        f"{role_label}\n"
+        f"📍 {html.escape(origin)} → {html.escape(destination)}\n"
+        f"📅 {date_display}\n"
+        f"🕐 {time}\n"
+        f"💺 Мест: {seats}\n\n"
+        "Всё верно?"
     )
-    await m.answer(text, parse_mode="HTML")
+    await state.set_state(RideForm.waiting_for_confirmation)
+    await m.answer(text, reply_markup=ride_confirm_kb(), parse_mode="HTML")
 
 
-# --- ГЛАВНЫЙ ОБРАБОТЧИК ДИАЛОГА (AI) ---
-@router.message(
-    RideForm.chatting_with_ai,
-    F.text & ~F.text.startswith(
-        "/") & ~F.text.in_({"📋 Мои поездки", "🔍 Найти поездку", "🙋 Подвези", "🚗 Подвезу"})
-)
-async def handle_ai_conversation(m: types.Message, state: FSMContext):
-    # 1. Получаем текущие данные из состояния
+# --- ШАГ 3: подтверждение ---
+@router.message(RideForm.waiting_for_confirmation, F.text == "✅ Подтвердить")
+async def confirm_ride(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    role = data.get("role")
+    res = {
+        "origin": data.get("origin"),
+        "destination": data.get("destination"),
+        "date": data.get("date"),
+        "start_time": data.get("start_time"),
+        "seats": data.get("seats"),
+    }
+    await process_ride_data(m, res, state)
 
-    # 2. Если роль не задана, пробуем найти из истории
-    if not role:
-        async with async_session() as s:
-            user_res = await s.execute(select(User.id).where(User.telegram_id == m.from_user.id))
-            u_id = user_res.scalar()
 
-            if u_id:
-                last_ride_res = await s.execute(
-                    select(Ride.role)
-                    .where(Ride.user_id == u_id)
-                    .order_by(Ride.created_at.desc())
-                    .limit(1)
-                )
-                last_role = last_ride_res.scalar()
-                if last_role:
-                    role = last_role
-    
-    # Если роль так и не нашли (новый юзер без кнопок), ставим passenger по умолчанию
-    if not role:
-        role = "passenger"
-        # Запишем в стейт, чтобы дальше не дергать БД
-        await state.update_data(role=role) 
-
-    # 3. Передаем роль в NLU
-    res = await nlu.parse_intent(m.text, m.from_user.id, role=role)
-    
-    if not res:
-        return await m.answer("Извините, сервис временно недоступен.")
-
-    is_ride_saved = False
-    if res.get("origin") and res.get("destination") and res.get("date"):
-        # Если мы "угадали" роль из БД, надо обновить её в стейте перед сохранением,
-        # так как process_ride_data берет роль из state
-        await state.update_data(role=role)
-        
-        await process_ride_data(m, res, state)
-        is_ride_saved = True
-    
-    # Фильтруем ответ от мусора
-    ai_reply = res.get("raw_text", "")
-    
-    # Удаляем любые блоки кода ``````
-    clean_reply = re.sub(r"``````", "", ai_reply, flags=re.DOTALL).strip()
-    
-    # На всякий случай удаляем остаточные JSON-подобные структуры, если они не были в блоке кода
-    # (если ответ начинается с { и заканчивается }, считаем его техническим и скрываем)
-    if clean_reply.strip().startswith("{") and clean_reply.strip().endswith("}"):
-        clean_reply = ""
-
-    if clean_reply:
-        logger.info(f"💬 Показываем ответ AI: {clean_reply[:100]}...")
-        await m.answer(clean_reply)
-    else:
-        logger.warning("❌ Не удалось извлечь данные о поездке")
-        await m.answer(
-            "🤷🏻 Не могу понять детали маршрута. Попробуйте еще раз, указав Откуда, Куда и Дату.\n\n"
-            "Наример:\n"
-            "'Из Здравого в Краснодар завтра в 10 утра, есть 2 места'"
-        )
+# --- ОТМЕНА ПОЕЗДКИ (любой шаг) ---
+@router.message(
+    StateFilter(
+        RideForm.waiting_for_input,
+        RideForm.waiting_for_origin,
+        RideForm.waiting_for_destination,
+        RideForm.waiting_for_date,
+        RideForm.waiting_for_confirmation,
+    ),
+    F.text == "❌ Отменить",
+)
+async def cancel_ride(m: types.Message, state: FSMContext):
+    await state.clear()
+    await m.answer("❌ Отменено. Выберите действие:", reply_markup=main_kb())
 
 
 async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
@@ -389,6 +576,7 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
             date=parsed_date,
             start_time=start_time,
             seats=seats,
+            initial_seats=seats,
             role=role
         )
         
@@ -396,7 +584,7 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
         await s.commit()
         await s.refresh(new_ride)
 
-        logger.info(f"✅ Ride created: ID={new_ride.id}, ride_date={new_ride.ride_date}")
+        logger.info(f"✅ Ride created: ID={new_ride.id}, date={new_ride.date}")
 
         logger.info(
             f"✅ Поездка сохранена: ID={new_ride.id}, user={m.from_user.id}, "
@@ -657,3 +845,538 @@ async def delete_ride(cb: types.CallbackQuery):
     except Exception as e:
         logger.error(f"Error in delete_ride: {e}")
         await cb.answer("Ошибка при удалении")
+
+
+# ============================================================
+# ДОСТАВКА (Delivery Module)
+# ============================================================
+
+# --- КНОПКИ ДОСТАВКИ ---
+@router.message(F.text.in_(["🛍 Привези", "🛒 Привезу"]))
+async def ask_delivery(m: types.Message, state: FSMContext):
+    """Обработчик кнопок доставки."""
+    await state.clear()
+    
+    is_request = "🛍" in m.text  # True для "Привези", False для "Привезу"
+    role = "request" if is_request else "offer"
+    await state.update_data(role=role)
+    
+    if is_request:
+        await state.set_state(DeliveryRequestForm.waiting_for_text)
+        text = (
+            "🛍 <b>Заказ доставки</b>\n\n"
+            "Напишите, что нужно привезти. Например:\n"
+            "«Привези продукты из Пятёрочки сегодня до 18:00»\n\n"
+            "Укажите магазин, желаемое время и список товаров."
+        )
+    else:
+        await state.set_state(DeliveryOfferForm.waiting_for_text)
+        text = (
+            "🛒 <b>Предложение доставки</b>\n\n"
+            "Напишите, куда вы едете. Например:\n"
+            "«Еду в Пятёрочку сегодня в 15:00, могу взять 3 заказа»\n\n"
+            "Укажите магазин, время поездки и сколько заказов можете взять."
+        )
+    
+    await m.answer(text, reply_markup=delivery_cancel_kb(), parse_mode="HTML")
+
+
+# --- ОБРАБОТКА ТЕКСТА ДЛЯ ДОСТАВКИ ---
+@router.message(
+    DeliveryRequestForm.waiting_for_text,
+    F.text & ~F.text.startswith("/")
+)
+async def handle_delivery_request_text(m: types.Message, state: FSMContext):
+    """Обработка текста для заявки «Привези»."""
+    await process_delivery_text(m, state, "request")
+
+
+@router.message(
+    DeliveryOfferForm.waiting_for_text,
+    F.text & ~F.text.startswith("/")
+)
+async def handle_delivery_offer_text(m: types.Message, state: FSMContext):
+    """Обработка текста для предложения «Привезу»."""
+    await process_delivery_text(m, state, "offer")
+
+
+async def process_delivery_text(m: types.Message, state: FSMContext, delivery_type: str):
+    """
+    Общая функция обработки текста для доставки.
+    Использует NLU + fallback parser для извлечения данных.
+    """
+    user_text = m.text
+    
+    # TODO: Добавить NLU для доставки (Phase 2)
+    # Пока используем простой парсинг
+    parsed_data = parse_delivery_text(user_text)
+    
+    # Сохраняем данные в state
+    await state.update_data(**parsed_data)
+    await state.update_data(original_text=user_text)
+    
+    # Показываем подтверждение
+    await show_delivery_confirmation(m, state, delivery_type)
+
+
+_STORE_MAP = [
+    (["пятёрочк", "пятерочк"], "Пятёрочка"),
+    (["магнит"], "Магнит"),
+    (["перекрёсток", "перекресток"], "Перекрёсток"),
+    (["лент"], "Лента"),
+    (["ашан"], "Ашан"),
+]
+
+
+def parse_delivery_text(text: str) -> dict:
+    """Простой парсер для извлечения данных о доставке."""
+    result = {
+        "store": "Пятёрочка",
+        "date": None,
+        "time": None,
+        "capacity": 1,
+    }
+
+    text_lower = text.lower()
+
+    # Определение магазина
+    for keywords, store_name in _STORE_MAP:
+        if any(kw in text_lower for kw in keywords):
+            result["store"] = store_name
+            break
+
+    # Поиск даты ("послезавтра" должен быть раньше "завтра")
+    today = datetime.now().date()
+
+    if "послезавтра" in text_lower:
+        result["date"] = (today + timedelta(days=2)).strftime("%Y-%m-%d")
+    elif "завтра" in text_lower:
+        result["date"] = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    elif "сегодня" in text_lower:
+        result["date"] = today.strftime("%Y-%m-%d")
+
+    # Поиск времени
+    time_match = re.search(r"(\d{1,2}):(\d{2})", text)
+    if time_match:
+        result["time"] = f"{time_match.group(1)}:{time_match.group(2)}"
+    else:
+        # Поиск времени словами
+        if "утра" in text_lower or "вечера" in text_lower:
+            hour_match = re.search(r"(\d{1,2})\s*(?:утра|вечера)", text_lower)
+            if hour_match:
+                hour = int(hour_match.group(1))
+                if "вечера" in text_lower and hour < 12:
+                    hour += 12
+                result["time"] = f"{hour:02d}:00"
+
+    # Поиск количества заказов
+    capacity_match = re.search(r"(\d+)\s*(?:заказ|заказа|заказов)", text_lower)
+    if capacity_match:
+        result["capacity"] = int(capacity_match.group(1))
+
+    return result
+
+
+async def show_delivery_confirmation(m: types.Message, state: FSMContext, delivery_type: str):
+    """Показывает подтверждение перед сохранением доставки."""
+    data = await state.get_data()
+    
+    store = data.get("store", "Пятёрочка")
+    date = data.get("date")
+    time = data.get("time")
+    capacity = data.get("capacity", 1)
+    original_text = data.get("original_text", "")
+    
+    # Проверяем, что дата и время указаны
+    if not date or not time:
+        missing = []
+        if not date:
+            missing.append("дату (сегодня/завтра или в формате 15.03.2024)")
+        if not time:
+            missing.append("время (в 15:00 или в 3 часа дня)")
+        
+        await m.answer(
+            f"⚠️ Не указаны {', '.join(missing)}.\n\n"
+            f"Пожалуйста, напишите ещё раз с указанием всех деталей.\n"
+            f"Например: «Привези продукты из Пятёрочки сегодня в 18:00»",
+            reply_markup=delivery_cancel_kb()
+        )
+        await state.clear()
+        return
+    
+    # Форматируем дату для отображения
+    display_date = date
+    if date:
+        try:
+            date_obj = datetime.strptime(date, "%Y-%m-%d")
+            display_date = date_obj.strftime("%d.%m.%Y")
+        except:
+            pass
+    
+    if delivery_type == "request":
+        text = (
+            "🛍 <b>Подтверждение заявки</b>\n\n"
+            f"🏪 Магазин: {store}\n"
+            f"📅 Дата: {display_date}\n"
+            f"🕐 Время: {time}\n\n"
+            f"📝 Заказ: {original_text}\n\n"
+            "Правильно ли я понял?"
+        )
+    else:
+        text = (
+            "🛒 <b>Подтверждение предложения</b>\n\n"
+            f"🏪 Магазин: {store}\n"
+            f"📅 Дата: {display_date}\n"
+            f"🕐 Время: {time}\n"
+            f"📦 Мест для заказов: {capacity}\n\n"
+            f"💬 Комментарий: {original_text}\n\n"
+            "Правильно ли я понял?"
+        )
+    
+    await m.answer(text, reply_markup=delivery_confirm_kb(), parse_mode="HTML")
+    await state.set_state(
+        DeliveryRequestForm.waiting_for_confirmation if delivery_type == "request"
+        else DeliveryOfferForm.waiting_for_confirmation
+    )
+
+
+# --- ПОДТВЕРЖДЕНИЕ ДОСТАВКИ ---
+@router.message(
+    StateFilter(DeliveryRequestForm.waiting_for_confirmation, DeliveryOfferForm.waiting_for_confirmation),
+    F.text == "✅ Подтвердить"
+)
+async def confirm_delivery(m: types.Message, state: FSMContext):
+    """Сохранение заявки/предложения доставки."""
+    data = await state.get_data()
+    delivery_type = data.get("role")
+    
+    # Получаем bot из state.storage
+    bot = m.bot
+    
+    async with async_session() as s:
+        # Находим или создаём пользователя
+        user_result = await s.execute(select(User).where(User.telegram_id == m.from_user.id))
+        user = user_result.scalar()
+
+        if not user:
+            user = User(telegram_id=m.from_user.id, username=m.from_user.username)
+            s.add(user)
+            await s.commit()
+            await s.refresh(user)
+
+        store = data.get("store", "Не указан")
+        date = data.get("date")
+        time = data.get("time")
+        original_text = data.get("original_text", "")
+        capacity = data.get("capacity", 1)
+
+        if delivery_type == "request":
+            # Создаём заявку
+            request = DeliveryRequest(
+                user_id=user.id,
+                store=store[:MAX_STORE_NAME_LENGTH],
+                request_text=original_text[:MAX_REQUEST_TEXT_LENGTH],
+                desired_date=date,
+                desired_time_text=time,
+                status="active"
+            )
+            s.add(request)
+            await s.commit()
+            await s.refresh(request)
+
+            logger.info(f"🛍 Создана доставка: ID={request.id}, user={user.id}, store={store}")
+
+            await m.answer(
+                f"✅ Заявка на доставку сохранена!\n\n"
+                f"Ищу исполнителей...",
+                reply_markup=main_kb()
+            )
+
+            # Запускаем matching с уведомлениями
+            await run_matching_for_request(request, bot)
+
+        else:
+            # Создаём предложение
+            offer = DeliveryOffer(
+                user_id=user.id,
+                store=store[:MAX_STORE_NAME_LENGTH],
+                comment=original_text[:MAX_REQUEST_TEXT_LENGTH],
+                trip_date=date,
+                trip_time=time,
+                capacity=min(capacity, MAX_CAPACITY),
+                status="active"
+            )
+            s.add(offer)
+            await s.commit()
+            await s.refresh(offer)
+            
+            logger.info(f"🛒 Создано предложение: ID={offer.id}, user={user.id}, store={store}")
+
+            await m.answer(
+                f"✅ Предложение доставки сохранено!\n\n"
+                f"Ищу заказы...",
+                reply_markup=main_kb()
+            )
+
+            # Запускаем matching с уведомлениями
+            await run_matching_for_offer(offer, bot)
+
+    await state.clear()
+
+
+# --- ОТМЕНА ДОСТАВКИ ---
+@router.message(
+    StateFilter(
+        DeliveryRequestForm.waiting_for_text,
+        DeliveryOfferForm.waiting_for_text,
+        DeliveryRequestForm.waiting_for_confirmation,
+        DeliveryOfferForm.waiting_for_confirmation,
+    ),
+    F.text == "❌ Отменить"
+)
+async def cancel_delivery(m: types.Message, state: FSMContext):
+    """Отмена создания доставки."""
+    await state.clear()
+    await m.answer("❌ Отменено. Выберите действие:", reply_markup=main_kb())
+
+
+# --- МОИ ДОСТАВКИ ---
+@router.message(Command("my_deliveries"))
+@router.message(F.text == "📦 Мои доставки")
+async def list_deliveries(m: types.Message, state: FSMContext):
+    """Показ списка доставок пользователя."""
+    await state.clear()
+
+    async with async_session() as s:
+        # Находим пользователя
+        user_result = await s.execute(select(User).where(User.telegram_id == m.from_user.id))
+        user = user_result.scalar()
+
+        if not user:
+            return await m.answer("Сначала нажмите /start")
+
+        # Получаем заявки и предложения
+        requests_result = await s.execute(
+            select(DeliveryRequest).where(
+                DeliveryRequest.user_id == user.id
+            ).order_by(DeliveryRequest.created_at.desc())
+        )
+        requests = requests_result.scalars().all()
+
+        offers_result = await s.execute(
+            select(DeliveryOffer).where(
+                DeliveryOffer.user_id == user.id
+            ).order_by(DeliveryOffer.created_at.desc())
+        )
+        offers = offers_result.scalars().all()
+
+        if not requests and not offers:
+            return await m.answer("У вас пока нет активных доставок.")
+
+        messages_sent = 0
+        
+        # Показываем заявки
+        if requests:
+            messages_sent += 1
+            for req in requests[:5]:  # Показываем последние 5
+                status_emoji = {"active": "🟢", "matched": "🟡", "confirmed": "🔵", "completed": "✅", "cancelled": "❌"}.get(req.status, "⚪")
+                date_display = req.desired_date or "Не указана"
+                if date_display and len(date_display) == 10:
+                    try:
+                        date_display = datetime.strptime(date_display, "%Y-%m-%d").strftime("%d.%m.%Y")
+                    except:
+                        pass
+
+                text = (
+                    f"{status_emoji} <b>🛍 Мои заявки (Привези): {req.store}</b>\n"
+                    f"📅 {date_display} | 🕐 {req.desired_time_text or 'Не указано'}\n"
+                    f"📝 {req.request_text[:100]}{'...' if len(req.request_text) > 100 else ''}\n"
+                    f"Статус: {req.status}"
+                )
+
+                # Кнопки управления
+                kb = InlineKeyboardBuilder()
+                if req.status == "active":
+                    kb.button(text="❌ Отменить", callback_data=f"del_req_{req.id}")
+                
+                # Добавляем кнопки для pending matches
+                if req.matches:
+                    for match in req.matches[:3]:  # Показываем первые 3 match
+                        if match.status == "pending":
+                            offer = await s.get(DeliveryOffer, match.offer_id)
+                            if offer:
+                                kb.button(
+                                    text="✅ Взять заказ",
+                                    callback_data=f"confirm_match_{match.id}"
+                                )
+                                kb.button(
+                                    text="❌ Отклонить",
+                                    callback_data=f"reject_match_{match.id}"
+                                )
+                
+                if kb.buttons:
+                    await m.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+                else:
+                    await m.answer(text, parse_mode="HTML")
+
+        # Показываем предложения
+        if offers:
+            if messages_sent > 0:
+                await asyncio.sleep(0.5)  # Небольшая пауза между сообщениями
+            
+            for offer in offers[:5]:  # Показываем последние 5
+                status_emoji = {"active": "🟢", "full": "🔴", "completed": "✅", "cancelled": "❌"}.get(offer.status, "⚪")
+                date_display = offer.trip_date or "Не указана"
+                if date_display and len(date_display) == 10:
+                    try:
+                        date_display = datetime.strptime(date_display, "%Y-%m-%d").strftime("%d.%m.%Y")
+                    except:
+                        pass
+
+                text = (
+                    f"{status_emoji} <b>🛒 Мои предложения (Привезу): {offer.store}</b>\n"
+                    f"📅 {date_display} | 🕐 {offer.trip_time or 'Не указано'}\n"
+                    f"📦 Мест: {offer.capacity - offer.orders_taken}/{offer.capacity}\n"
+                    f"Статус: {offer.status}"
+                )
+
+                # Кнопки управления
+                kb = InlineKeyboardBuilder()
+                if offer.status == "active":
+                    kb.button(text="❌ Отменить", callback_data=f"del_offer_{offer.id}")
+                
+                # Добавляем кнопки для pending matches
+                if offer.matches:
+                    for match in offer.matches[:3]:  # Показываем первые 3 match
+                        if match.status == "pending":
+                            request = await s.get(DeliveryRequest, match.request_id)
+                            if request:
+                                kb.button(
+                                    text="✅ Подтвердить",
+                                    callback_data=f"confirm_match_{match.id}"
+                                )
+                                kb.button(
+                                    text="❌ Отклонить",
+                                    callback_data=f"reject_match_{match.id}"
+                                )
+                
+                if kb.buttons:
+                    await m.answer(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+                else:
+                    await m.answer(text, parse_mode="HTML")
+
+
+# --- CALLBACKS ДЛЯ ДОСТАВКИ ---
+@router.callback_query(F.data.startswith("del_req_"))
+async def cancel_delivery_request(cb: types.CallbackQuery):
+    """Отмена заявки на доставку."""
+    try:
+        req_id = int(cb.data.split("_")[-1])
+        
+        async with async_session() as s:
+            request = await s.get(DeliveryRequest, req_id)
+            
+            if request and request.status == "active":
+                request.status = "cancelled"
+                await s.commit()
+                logger.info(f"🗑️ Заявка на доставку отменена: ID={req_id}, user={cb.from_user.id}")
+                await cb.answer("Заявка отменена")
+                await cb.message.edit_text(cb.message.text + "\n\n❌ Отменено")
+            else:
+                await cb.answer("Заявка уже не активна", show_alert=True)
+                
+    except Exception as e:
+        logger.error(f"Error in cancel_delivery_request: {e}")
+        await cb.answer("Ошибка при отмене")
+
+
+@router.callback_query(F.data.startswith("del_offer_"))
+async def cancel_delivery_offer(cb: types.CallbackQuery):
+    """Отмена предложения доставки."""
+    try:
+        offer_id = int(cb.data.split("_")[-1])
+
+        async with async_session() as s:
+            offer = await s.get(DeliveryOffer, offer_id)
+
+            if offer and offer.status == "active":
+                offer.status = "cancelled"
+                await s.commit()
+                logger.info(f"🗑️ Предложение доставки отменено: ID={offer_id}, user={cb.from_user.id}")
+                await cb.answer("Предложение отменено")
+                await cb.message.edit_text(cb.message.text + "\n\n❌ Отменено")
+            else:
+                await cb.answer("Предложение уже не активно", show_alert=True)
+
+    except Exception as e:
+        logger.error(f"Error in cancel_delivery_offer: {e}")
+        await cb.answer("Ошибка при отмене")
+
+
+# --- CALLBACKS ДЛЯ MATCH ---
+@router.callback_query(F.data.startswith("confirm_match_"))
+async def confirm_delivery_match(cb: types.CallbackQuery):
+    """Подтверждение match."""
+    try:
+        match_id = int(cb.data.split("_")[-1])
+
+        async with async_session() as s:
+            match = await s.get(DeliveryMatch, match_id)
+            
+            if not match:
+                return await cb.answer("Match не найден", show_alert=True)
+            
+            if match.status != "pending":
+                return await cb.answer("Match уже обработан", show_alert=True)
+            
+            match.status = "confirmed"
+            match.confirmed_at = datetime.utcnow()
+            
+            # Увеличиваем orders_taken у offer
+            offer = await s.get(DeliveryOffer, match.offer_id)
+            if offer:
+                offer.orders_taken += 1
+                if offer.orders_taken >= offer.capacity:
+                    offer.status = "full"
+            
+            # Обновляем статус request
+            request = await s.get(DeliveryRequest, match.request_id)
+            if request and request.status == "active":
+                request.status = "matched"
+            
+            await s.commit()
+            
+            logger.info(f"✅ Match подтверждён: ID={match_id}")
+            await cb.answer("Доставка подтверждена!")
+            await cb.message.edit_text(cb.message.text + "\n\n✅ Подтверждено")
+            
+    except Exception as e:
+        logger.error(f"Error in confirm_delivery_match: {e}")
+        await cb.answer("Ошибка при подтверждении")
+
+
+@router.callback_query(F.data.startswith("reject_match_"))
+async def reject_delivery_match(cb: types.CallbackQuery):
+    """Отклонение match."""
+    try:
+        match_id = int(cb.data.split("_")[-1])
+
+        async with async_session() as s:
+            match = await s.get(DeliveryMatch, match_id)
+            
+            if not match:
+                return await cb.answer("Match не найден", show_alert=True)
+            
+            if match.status != "pending":
+                return await cb.answer("Match уже обработан", show_alert=True)
+            
+            match.status = "rejected"
+            await s.commit()
+            
+            logger.info(f"❌ Match отклонён: ID={match_id}")
+            await cb.answer("Match отклонён")
+            await cb.message.edit_text(cb.message.text + "\n\n❌ Отклонено")
+            
+    except Exception as e:
+        logger.error(f"Error in reject_delivery_match: {e}")
+        await cb.answer("Ошибка при отклонении")

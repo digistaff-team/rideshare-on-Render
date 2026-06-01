@@ -55,7 +55,7 @@ class SimpleParser:
         # 3. Парсинг времени
         time = self._parse_time(text_lower)
         if time:
-            result["starttime"] = time
+            result["start_time"] = time
         
         # 4. Парсинг количества мест
         seats = self._extract_seats(text_lower)
@@ -104,16 +104,14 @@ class SimpleParser:
         """Извлекает дату из текста"""
         today = datetime.now().date()
         
+        if "послезавтра" in text:
+            return (today + timedelta(days=2)).strftime("%Y-%m-%d")
+
         if "завтра" in text:
-            target_date = today + timedelta(days=1)
-            return target_date.strftime("%Y-%m-%d")
-        
+            return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+
         if "сегодня" in text:
             return today.strftime("%Y-%m-%d")
-        
-        if "послезавтра" in text:
-            target_date = today + timedelta(days=2)
-            return target_date.strftime("%Y-%m-%d")
         
         # Паттерн для конкретных дат
         date_match = re.search(r"(\d{1,2})[.\-/](\d{1,2})", text)
