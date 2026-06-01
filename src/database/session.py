@@ -53,7 +53,7 @@ def create_engine_with_retry(max_retries: int = 5):
                 )
                 logger.info("Database engine created (SQLite)")
             else:
-                ssl_ctx = ssl.create_default_context()
+                ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 ssl_ctx.check_hostname = False
                 ssl_ctx.verify_mode = ssl.CERT_NONE
                 eng = create_async_engine(
@@ -61,13 +61,13 @@ def create_engine_with_retry(max_retries: int = 5):
                     echo=False,
                     future=True,
                     pool_pre_ping=True,
-                    pool_size=POOL_SIZE,
-                    max_overflow=MAX_OVERFLOW,
+                    pool_size=5,
+                    max_overflow=10,
                     pool_timeout=POOL_TIMEOUT,
                     pool_recycle=POOL_RECYCLE,
                     connect_args={"ssl": ssl_ctx},
                 )
-                logger.info(f"Database engine created (pool_size={POOL_SIZE}, max_overflow={MAX_OVERFLOW})")
+                logger.info(f"Database engine created (pool_size=5, max_overflow=10)")
             return eng
         except Exception as e:
             wait_time = 2 ** attempt
