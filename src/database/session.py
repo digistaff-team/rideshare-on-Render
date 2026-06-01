@@ -61,7 +61,7 @@ def create_engine_with_retry(max_retries: int = 5):
                     max_overflow=10,
                     pool_timeout=POOL_TIMEOUT,
                     pool_recycle=POOL_RECYCLE,
-                    connect_args={"sslmode": "require"},
+                    connect_args={"ssl": "require"},
                 )
                 logger.info(f"Database engine created (pool_size=5, max_overflow=10)")
             return eng
