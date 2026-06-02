@@ -47,6 +47,7 @@ class RideForm(StatesGroup):
     waiting_for_origin = State()
     waiting_for_destination = State()
     waiting_for_date = State()
+    waiting_for_time = State()
     waiting_for_confirmation = State()
 
 
@@ -114,6 +115,18 @@ def date_kb() -> ReplyKeyboardMarkup:
             KeyboardButton(text=f"Завтра ({(today + timedelta(days=1)).strftime('%d.%m')})"),
         ],
         [KeyboardButton(text=f"Послезавтра ({(today + timedelta(days=2)).strftime('%d.%m')})")],
+        [KeyboardButton(text="❌ Отменить")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def time_kb() -> ReplyKeyboardMarkup:
+    """Клавиатура быстрого выбора времени выезда."""
+    rows = [
+        [KeyboardButton(text="06:00"), KeyboardButton(text="07:00"), KeyboardButton(text="08:00"), KeyboardButton(text="09:00")],
+        [KeyboardButton(text="10:00"), KeyboardButton(text="11:00"), KeyboardButton(text="12:00"), KeyboardButton(text="13:00")],
+        [KeyboardButton(text="14:00"), KeyboardButton(text="15:00"), KeyboardButton(text="16:00"), KeyboardButton(text="17:00")],
+        [KeyboardButton(text="18:00"), KeyboardButton(text="19:00"), KeyboardButton(text="20:00"), KeyboardButton(text="21:00")],
         [KeyboardButton(text="❌ Отменить")],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
@@ -425,6 +438,13 @@ async def _proceed_to_next_field(m: types.Message, state: FSMContext):
         await m.answer("📅 <b>Когда?</b>", reply_markup=date_kb(), parse_mode="HTML")
         return
 
+    if not data.get("start_time"):
+        await state.set_state(RideForm.waiting_for_time)
+        role = data.get("role", "passenger")
+        label = "🕐 <b>Время выезда?</b>" if role == "driver" else "🕐 <b>В какое время нужна поездка?</b>"
+        await m.answer(label, reply_markup=time_kb(), parse_mode="HTML")
+        return
+
     await _show_ride_confirmation(m, state)
 
 
@@ -491,6 +511,36 @@ async def handle_ride_date(m: types.Message, state: FSMContext):
     await _proceed_to_next_field(m, state)
 
 
+# --- ШАГ 2d: ввод времени выезда ---
+@router.message(
+    RideForm.waiting_for_time,
+    F.text & ~F.text.startswith("/") & ~F.text.in_({"❌ Отменить"}),
+)
+async def handle_ride_time(m: types.Message, state: FSMContext):
+    text = m.text.strip()
+
+    # Прямой формат HH:MM
+    time_match = re.match(r'^(\d{1,2}):(\d{2})$', text)
+    if time_match:
+        h, mins = int(time_match.group(1)), int(time_match.group(2))
+        if 0 <= h <= 23 and 0 <= mins <= 59:
+            await state.update_data(start_time=f"{h:02d}:{mins:02d}")
+            await _proceed_to_next_field(m, state)
+            return
+
+    # Попытка распарсить через SimpleParser (поддерживает «9 утра», «в 18 часов» и т.п.)
+    parsed = parser.parse(text)
+    if parsed and parsed.get("start_time"):
+        await state.update_data(start_time=parsed["start_time"])
+        await _proceed_to_next_field(m, state)
+        return
+
+    await m.answer(
+        "❓ Не понял время. Выберите кнопку или напишите, например: 09:00 или «в 9 утра»",
+        reply_markup=time_kb(),
+    )
+
+
 async def _show_ride_confirmation(m: types.Message, state: FSMContext):
     """Показывает итоговый экран перед сохранением поездки."""
     data = await state.get_data()
@@ -538,6 +588,7 @@ async def confirm_ride(m: types.Message, state: FSMContext):
         RideForm.waiting_for_origin,
         RideForm.waiting_for_destination,
         RideForm.waiting_for_date,
+        RideForm.waiting_for_time,
         RideForm.waiting_for_confirmation,
     ),
     F.text == "❌ Отменить",
