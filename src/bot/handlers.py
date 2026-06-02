@@ -455,9 +455,11 @@ async def _proceed_to_next_field(m: types.Message, state: FSMContext):
         await m.answer(label, reply_markup=time_kb(), parse_mode="HTML")
         return
 
-    if data.get("role") == "driver" and data.get("seats") is None:
+    if data.get("seats") is None:
         await state.set_state(RideForm.waiting_for_seats)
-        await m.answer("💺 <b>Сколько свободных мест?</b>", reply_markup=seats_kb(), parse_mode="HTML")
+        role = data.get("role", "passenger")
+        label = "💺 <b>Сколько свободных мест?</b>" if role == "driver" else "💺 <b>Сколько мест нужно?</b>"
+        await m.answer(label, reply_markup=seats_kb(), parse_mode="HTML")
         return
 
     await _show_ride_confirmation(m, state)
