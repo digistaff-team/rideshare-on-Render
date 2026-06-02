@@ -570,7 +570,7 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
             if not parsed_date:
                 parsed_date = datetime.utcnow().date() + timedelta(days=1)
 
-            seats = int(res.get('seats', 1 if role == 'passenger' else 3))
+            seats = int(res.get('seats') or (1 if role == 'passenger' else 3))
 
             start_time = res.get('start_time')
             if not start_time or start_time == 'None' or start_time == '':
