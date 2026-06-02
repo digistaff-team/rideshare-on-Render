@@ -448,11 +448,9 @@ async def _proceed_to_next_field(m: types.Message, state: FSMContext):
         await m.answer("📅 <b>Когда?</b>", reply_markup=date_kb(), parse_mode="HTML")
         return
 
-    if not data.get("start_time"):
+    if not data.get("start_time") and data.get("role") == "driver":
         await state.set_state(RideForm.waiting_for_time)
-        role = data.get("role", "passenger")
-        label = "🕐 <b>Время выезда?</b>" if role == "driver" else "🕐 <b>В какое время нужна поездка?</b>"
-        await m.answer(label, reply_markup=time_kb(), parse_mode="HTML")
+        await m.answer("🕐 <b>Время выезда?</b>", reply_markup=time_kb(), parse_mode="HTML")
         return
 
     if data.get("seats") is None:
@@ -593,13 +591,14 @@ async def _show_ride_confirmation(m: types.Message, state: FSMContext):
 
     role_label = "🙋 Пассажир" if role == "passenger" else "🚗 Водитель"
     date_display = fmt_date(ride_date) if ride_date else "—"
+    time_line = f"🕐 {time}\n" if role == "driver" else ""
 
     text = (
         f"<b>Подтвердите поездку</b>\n\n"
         f"{role_label}\n"
         f"📍 {html.escape(origin)} → {html.escape(destination)}\n"
         f"📅 {date_display}\n"
-        f"🕐 {time}\n"
+        f"{time_line}"
         f"💺 Мест: {seats}\n\n"
         "Всё верно?"
     )
