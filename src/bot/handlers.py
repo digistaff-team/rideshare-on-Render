@@ -552,59 +552,63 @@ async def process_ride_data(m: types.Message, res: dict, state: FSMContext):
 
     data = await state.get_data()
     role = data.get('role', 'passenger')
-    
-    async with async_session() as s:
-        user_stmt = await s.execute(select(User).where(User.telegram_id == m.from_user.id))
-        user = user_stmt.scalar()
-        if not user:
-            user = User(telegram_id=m.from_user.id, username=m.from_user.username)
-            s.add(user)
+    new_ride = None
+    saved_user = None
+
+    try:
+        async with async_session() as s:
+            user_stmt = await s.execute(select(User).where(User.telegram_id == m.from_user.id))
+            user = user_stmt.scalar()
+            if not user:
+                user = User(telegram_id=m.from_user.id, username=m.from_user.username)
+                s.add(user)
+                await s.commit()
+                await s.refresh(user)
+            saved_user = user
+
+            parsed_date = parse_date(res['date'])
+            if not parsed_date:
+                parsed_date = datetime.utcnow().date() + timedelta(days=1)
+
+            seats = int(res.get('seats', 1 if role == 'passenger' else 3))
+
+            start_time = res.get('start_time')
+            if not start_time or start_time == 'None' or start_time == '':
+                start_time = "По договоренности"
+
+            new_ride = Ride(
+                user_id=user.id,
+                origin=(res.get('origin') or '')[:MAX_CITY_NAME_LENGTH],
+                destination=(res.get('destination') or '')[:MAX_CITY_NAME_LENGTH],
+                date=parsed_date,
+                start_time=start_time,
+                seats=seats,
+                initial_seats=seats,
+                role=role
+            )
+
+            s.add(new_ride)
             await s.commit()
-            await s.refresh(user)
+            await s.refresh(new_ride)
 
-        parsed_date = parse_date(res['date'])
-        if not parsed_date:
-            parsed_date = datetime.utcnow().date() + timedelta(days=1) 
-
-        seats = int(res.get('seats', 1 if role == 'passenger' else 3))
-        
-        # Если время не указано, ставим "По договоренности"
-        start_time = res.get('start_time')
-        if not start_time or start_time == 'None' or start_time == '':
-            start_time = "По договоренности"
-
-        new_ride = Ride(
-            user_id=user.id,
-            origin=res['origin'][:MAX_CITY_NAME_LENGTH],
-            destination=res['destination'][:MAX_CITY_NAME_LENGTH],
-            date=parsed_date,
-            start_time=start_time,
-            seats=seats,
-            initial_seats=seats,
-            role=role
-        )
-        
-        s.add(new_ride)
-        await s.commit()
-        await s.refresh(new_ride)
-
-        logger.info(f"✅ Ride created: ID={new_ride.id}, date={new_ride.date}")
-
-        logger.info(
-            f"✅ Поездка сохранена: ID={new_ride.id}, user={m.from_user.id}, "
-            f"role={role}, origin={res['origin']}, destination={res['destination']}, "
-            f"date={parsed_date}, seats={seats}"
-        )
+            logger.info(
+                f"✅ Поездка сохранена: ID={new_ride.id}, user={m.from_user.id}, "
+                f"role={role}, origin={res.get('origin')}, destination={res.get('destination')}, "
+                f"date={parsed_date}, seats={seats}"
+            )
 
         await m.answer("✅ Поездка сохранена!", reply_markup=main_kb())
 
         if role == 'driver':
-            await match_passengers(m, new_ride, res, user)
+            await match_passengers(m, new_ride, res, saved_user)
         elif role == 'passenger':
-            await notify_drivers_about_passenger(m, new_ride, user)
+            await notify_drivers_about_passenger(m, new_ride, saved_user)
 
-
-    await state.clear()
+    except Exception as e:
+        logger.error(f"Ошибка сохранения поездки: {e}", exc_info=True)
+        await m.answer("❌ Ошибка при сохранении поездки. Попробуйте снова.", reply_markup=main_kb())
+    finally:
+        await state.clear()
 
 
 async def match_passengers(m: types.Message, new_ride: Ride, res: dict, user: User):
