@@ -48,6 +48,7 @@ class RideForm(StatesGroup):
     waiting_for_destination = State()
     waiting_for_date = State()
     waiting_for_time = State()
+    waiting_for_seats = State()
     waiting_for_confirmation = State()
 
 
@@ -118,6 +119,15 @@ def date_kb() -> ReplyKeyboardMarkup:
         [KeyboardButton(text="❌ Отменить")],
     ]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def seats_kb() -> ReplyKeyboardMarkup:
+    """Клавиатура выбора количества свободных мест (1–3)."""
+    kb = [
+        [KeyboardButton(text="1 место"), KeyboardButton(text="2 места"), KeyboardButton(text="3 места")],
+        [KeyboardButton(text="❌ Отменить")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 
 def time_kb() -> ReplyKeyboardMarkup:
@@ -445,6 +455,11 @@ async def _proceed_to_next_field(m: types.Message, state: FSMContext):
         await m.answer(label, reply_markup=time_kb(), parse_mode="HTML")
         return
 
+    if data.get("role") == "driver" and data.get("seats") is None:
+        await state.set_state(RideForm.waiting_for_seats)
+        await m.answer("💺 <b>Сколько свободных мест?</b>", reply_markup=seats_kb(), parse_mode="HTML")
+        return
+
     await _show_ride_confirmation(m, state)
 
 
@@ -541,6 +556,29 @@ async def handle_ride_time(m: types.Message, state: FSMContext):
     )
 
 
+# --- ШАГ 2e: выбор количества мест (только водитель) ---
+@router.message(
+    RideForm.waiting_for_seats,
+    F.text & ~F.text.startswith("/") & ~F.text.in_({"❌ Отменить"}),
+)
+async def handle_ride_seats(m: types.Message, state: FSMContext):
+    text = m.text.strip()
+    seats_map = {"1 место": 1, "2 места": 2, "3 места": 3}
+    if text in seats_map:
+        await state.update_data(seats=seats_map[text])
+        await _proceed_to_next_field(m, state)
+        return
+    # Свободный ввод числа
+    digits = re.findall(r'\d+', text)
+    if digits:
+        n = int(digits[0])
+        if 1 <= n <= 3:
+            await state.update_data(seats=n)
+            await _proceed_to_next_field(m, state)
+            return
+    await m.answer("❓ Выберите 1, 2 или 3 места.", reply_markup=seats_kb())
+
+
 async def _show_ride_confirmation(m: types.Message, state: FSMContext):
     """Показывает итоговый экран перед сохранением поездки."""
     data = await state.get_data()
@@ -589,6 +627,7 @@ async def confirm_ride(m: types.Message, state: FSMContext):
         RideForm.waiting_for_destination,
         RideForm.waiting_for_date,
         RideForm.waiting_for_time,
+        RideForm.waiting_for_seats,
         RideForm.waiting_for_confirmation,
     ),
     F.text == "❌ Отменить",
