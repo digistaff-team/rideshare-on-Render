@@ -635,6 +635,12 @@ async def confirm_ride(m: types.Message, state: FSMContext):
 )
 async def cancel_ride(m: types.Message, state: FSMContext):
     await state.clear()
+    chat_id = m.chat.id
+    for msg_id in (m.message_id, m.message_id - 1, m.message_id - 2):
+        try:
+            await m.bot.delete_message(chat_id, msg_id)
+        except Exception:
+            pass
     await m.answer("❌ Отменено. Выберите действие:", reply_markup=main_kb())
 
 
